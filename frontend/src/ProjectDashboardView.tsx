@@ -120,7 +120,9 @@ export default function ProjectDashboardView({
         </div>
 
         <button 
-          onClick={() => setUploadModalOpen(true)}
+          onClick={() => {
+            setUploadModalOpen(true);
+          }}
           className="btn-tactical btn-tactical-active border-glow-cyan"
           style={{ padding: '8px 14px' }}
         >
@@ -266,9 +268,15 @@ export default function ProjectDashboardView({
             </span>
             <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#fff' }}>{nextStep.title}</div>
             <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.4' }}>{nextStep.desc}</p>
-            {nextStep.step && (
+            {nextStep.action && (
               <button 
-                onClick={() => setWizardStep(nextStep.step as any)}
+                onClick={() => {
+                  if (nextStep.action === "Import Dataset") {
+                    setUploadModalOpen(true);
+                  } else if (nextStep.step) {
+                    setWizardStep(nextStep.step as any);
+                  }
+                }}
                 className="btn-tactical btn-tactical-active"
                 style={{ padding: '6px 12px', fontSize: '0.65rem', alignSelf: 'flex-start', marginTop: '6px' }}
               >

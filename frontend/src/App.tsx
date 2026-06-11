@@ -115,6 +115,12 @@ export default function App() {
   const [compiledVersion, setCompiledVersion] = useState<any>(null);
   const [isGeneratingBlueprint, setIsGeneratingBlueprint] = useState<boolean>(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [uploadName, setUploadName] = useState('');
+  const [uploadDesc, setUploadDesc] = useState('');
+  const [uploadTask, setUploadTask] = useState('instance_segmentation');
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadingStatus, setUploadingStatus] = useState('');
+  const [uploadError, setUploadError] = useState('');
 
   // Pipeline Parameters Form State (Combined & Lifted)
   const [formData, setFormData] = useState({
@@ -223,6 +229,53 @@ export default function App() {
       setDatasets(dsList);
     } catch (e) {
       console.error('Error refreshing datasets after upload:', e);
+    }
+  };
+
+  const handleUploadSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!uploadFile) return;
+
+    setUploadingStatus('Ingesting ZIP and extracting geospatial imagery...');
+    setUploadError('');
+
+    const formDataUpload = new FormData();
+    formDataUpload.append('file', uploadFile);
+    formDataUpload.append('name', uploadName);
+    formDataUpload.append('description', uploadDesc);
+    formDataUpload.append('task_type', uploadTask);
+
+    try {
+      const response = await fetch(`${API_BASE}/datasets/upload`, {
+        method: 'POST',
+        body: formDataUpload
+      });
+
+      const result = await response.json();
+      if (response.ok && result.status === 'success') {
+        setUploadingStatus('Running ResNet18 feature extraction & PCA clustering...');
+        
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        await handleDatasetUpload();
+        
+        const newDsId = result.dataset.id;
+        setActiveDatasetId(newDsId);
+        await fetchDatasetEmbeddings(newDsId);
+        await fetchDatasetVersions(newDsId);
+        
+        setUploadingStatus('');
+        setUploadModalOpen(false);
+        setUploadName('');
+        setUploadDesc('');
+        setUploadFile(null);
+        setWizardStep('curate');
+      } else {
+        setUploadError(result.detail || 'Failed to parse ZIP archive.');
+        setUploadingStatus('');
+      }
+    } catch (err: any) {
+      setUploadError(err.message || 'Network connection failed.');
+      setUploadingStatus('');
     }
   };
 
@@ -819,7 +872,6 @@ export default function App() {
           )}
           {wizardStep === 'curate' && (
             <PipelineStudioView 
-              uploadModalOpen={uploadModalOpen}
               setUploadModalOpen={setUploadModalOpen}
               wizardStep={wizardStep}
               setWizardStep={setWizardStep}
@@ -833,7 +885,6 @@ export default function App() {
               setActiveDatasetId={setActiveDatasetId}
               fetchDatasetEmbeddings={fetchDatasetEmbeddings}
               fetchDatasetVersions={fetchDatasetVersions}
-              onDatasetUpload={handleDatasetUpload}
               versions={versions}
               handleGeneratePipelineBlueprint={handleGeneratePipelineBlueprint}
               handleExecutePipelineRun={handleExecutePipelineRun}
@@ -1120,7 +1171,6 @@ export default function App() {
                 </div>
               ) : (
                 <PipelineStudioView 
-                  uploadModalOpen={uploadModalOpen}
                   setUploadModalOpen={setUploadModalOpen}
                   wizardStep={wizardStep}
                   setWizardStep={setWizardStep}
@@ -1134,7 +1184,6 @@ export default function App() {
                   setActiveDatasetId={setActiveDatasetId}
                   fetchDatasetEmbeddings={fetchDatasetEmbeddings}
                   fetchDatasetVersions={fetchDatasetVersions}
-                  onDatasetUpload={handleDatasetUpload}
                   versions={versions}
                   handleGeneratePipelineBlueprint={handleGeneratePipelineBlueprint}
                   handleExecutePipelineRun={handleExecutePipelineRun}
@@ -1313,8 +1362,117 @@ export default function App() {
             </form>
           </aside>
         )}
-
       </div>
+
+      {/* ZIP Ingestion Modal */}
+      {uploadModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          background: 'rgba(4, 6, 15, 0.85)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div className="glass-panel border-glow-cyan" style={{ width: '450px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', letterSpacing: '0.05em', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', color: '#fff' }}>
+              INGEST NEW GEOSPATIAL DATASET
+            </h3>
+            
+            <form onSubmit={handleUploadSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label>DATASET NAME</label>
+                <input 
+                  type="text" 
+                  value={uploadName}
+                  onChange={e => setUploadName(e.target.value)}
+                  placeholder="e.g. RarePlanes Cargo Ramp"
+                  required
+                  style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '8px 12px', borderRadius: '4px', outline: 'none' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label>DESCRIPTION</label>
+                <textarea 
+                  value={uploadDesc}
+                  onChange={e => setUploadDesc(e.target.value)}
+                  placeholder="Describe dataset location, GSD, target categories..."
+                  rows={3}
+                  style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '8px 12px', borderRadius: '4px', outline: 'none', resize: 'none' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label>TARGET OBJECT TASK</label>
+                <select 
+                  value={uploadTask}
+                  onChange={e => setUploadTask(e.target.value)}
+                  style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '8px 12px', borderRadius: '4px', outline: 'none' }}
+                >
+                  <option value="instance_segmentation">Instance Segmentation (Masks)</option>
+                  <option value="object_detection">Object Detection (Boxes)</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label>GEOSPATIAL CHIPS ARCHIVE (.ZIP)</label>
+                <input 
+                  type="file" 
+                  accept=".zip"
+                  onChange={e => {
+                    if (e.target.files && e.target.files.length > 0) {
+                      setUploadFile(e.target.files[0]);
+                    }
+                  }}
+                  required
+                  style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '8px 12px', borderRadius: '4px', outline: 'none' }}
+                />
+                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>ZIP must contain images/ folder with PNG/JPG/JPEG files.</span>
+              </div>
+
+              {uploadError && (
+                <div style={{ color: 'var(--accent-red)', fontSize: '0.7rem' }}>
+                  Error: {uploadError}
+                </div>
+              )}
+
+              {uploadingStatus && (
+                <div style={{ color: 'var(--accent-cyan)', fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <RefreshCw className="spin" style={{ width: '12px', height: '12px' }} />
+                  {uploadingStatus}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+                <button 
+                  type="button" 
+                  onClick={() => {
+                    setUploadModalOpen(false);
+                    setUploadError('');
+                    setUploadingStatus('');
+                  }}
+                  className="btn-tactical"
+                >
+                  CANCEL
+                </button>
+                <button 
+                  type="submit" 
+                  disabled={!!uploadingStatus}
+                  className="btn-tactical btn-tactical-active"
+                >
+                  INGEST ARCHIVE
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }// ============================================
@@ -1340,7 +1498,6 @@ const CLASS_NAMES: Record<number, string> = {
 // VIEW COMPONENT: 1. PIPELINE STUDIO (Curation & Build)
 // ============================================
 function PipelineStudioView({
-  uploadModalOpen,
   setUploadModalOpen,
   datasets,
   embeddings,
@@ -1352,7 +1509,6 @@ function PipelineStudioView({
   setActiveDatasetId,
   fetchDatasetEmbeddings,
   fetchDatasetVersions,
-  onDatasetUpload,
   versions: _versions,
   handleExecutePipelineRun,
   isGeneratingBlueprint,
@@ -1366,13 +1522,6 @@ function PipelineStudioView({
   compiledBlueprint,
   setCompiledBlueprint
 }: any) {
-  const [uploadName, setUploadName] = useState('');
-  const [uploadDesc, setUploadDesc] = useState('');
-  const [uploadTask, setUploadTask] = useState('instance_segmentation');
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [uploadingStatus, setUploadingStatus] = useState('');
-  const [uploadError, setUploadError] = useState('');
-
   // Control side-panel tab: curate data filters vs build pipeline configuration
   const controlTab = wizardStep === 'curate' ? 'curate' : 'build';
 
@@ -1436,51 +1585,6 @@ function PipelineStudioView({
     setWizardStep('annotate');
   };
 
-  const handleUploadSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!uploadFile) return;
-
-    setUploadingStatus('Ingesting ZIP and extracting geospatial imagery...');
-    setUploadError('');
-
-    const formDataUpload = new FormData();
-    formDataUpload.append('file', uploadFile);
-    formDataUpload.append('name', uploadName);
-    formDataUpload.append('description', uploadDesc);
-    formDataUpload.append('task_type', uploadTask);
-
-    try {
-      const response = await fetch(`${API_BASE}/datasets/upload`, {
-        method: 'POST',
-        body: formDataUpload
-      });
-
-      const result = await response.json();
-      if (response.ok && result.status === 'success') {
-        setUploadingStatus('Running ResNet18 feature extraction & PCA clustering...');
-        
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        await onDatasetUpload();
-        
-        const newDsId = result.dataset.id;
-        setActiveDatasetId(newDsId);
-        await fetchDatasetEmbeddings(newDsId);
-        await fetchDatasetVersions(newDsId);
-        
-        setUploadingStatus('');
-        setUploadModalOpen(false);
-        setUploadName('');
-        setUploadDesc('');
-        setUploadFile(null);
-      } else {
-        setUploadError(result.detail || 'Failed to parse ZIP archive.');
-        setUploadingStatus('');
-      }
-    } catch (err: any) {
-      setUploadError(err.message || 'Network connection failed.');
-      setUploadingStatus('');
-    }
-  };
 
   const renderScatterPlot = () => {
     if (embeddings.length === 0) return null;
@@ -2289,116 +2393,6 @@ function PipelineStudioView({
                 </div>
               )}
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* ZIP Ingestion Modal */}
-      {uploadModalOpen && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          width: '100vw',
-          height: '100vh',
-          background: 'rgba(4, 6, 15, 0.85)',
-          backdropFilter: 'blur(8px)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 1000
-        }}>
-          <div className="glass-panel border-glow-cyan" style={{ width: '450px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', letterSpacing: '0.05em', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', color: '#fff' }}>
-              INGEST NEW GEOSPATIAL DATASET
-            </h3>
-            
-            <form onSubmit={handleUploadSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label>DATASET NAME</label>
-                <input 
-                  type="text" 
-                  value={uploadName}
-                  onChange={e => setUploadName(e.target.value)}
-                  placeholder="e.g. RarePlanes Cargo Ramp"
-                  required
-                  style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '8px 12px', borderRadius: '4px', outline: 'none' }}
-                />
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label>DESCRIPTION</label>
-                <textarea 
-                  value={uploadDesc}
-                  onChange={e => setUploadDesc(e.target.value)}
-                  placeholder="Describe dataset location, GSD, target categories..."
-                  rows={3}
-                  style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '8px 12px', borderRadius: '4px', outline: 'none', resize: 'none' }}
-                />
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label>TARGET OBJECT TASK</label>
-                <select 
-                  value={uploadTask}
-                  onChange={e => setUploadTask(e.target.value)}
-                  style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '8px 12px', borderRadius: '4px', outline: 'none' }}
-                >
-                  <option value="instance_segmentation">Instance Segmentation (Masks)</option>
-                  <option value="object_detection">Object Detection (Boxes)</option>
-                </select>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label>GEOSPATIAL CHIPS ARCHIVE (.ZIP)</label>
-                <input 
-                  type="file" 
-                  accept=".zip"
-                  onChange={e => {
-                    if (e.target.files && e.target.files.length > 0) {
-                      setUploadFile(e.target.files[0]);
-                    }
-                  }}
-                  required
-                  style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '8px 12px', borderRadius: '4px', outline: 'none' }}
-                />
-                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>ZIP must contain images/ folder with PNG/JPG/JPEG files.</span>
-              </div>
-
-              {uploadError && (
-                <div style={{ color: 'var(--accent-red)', fontSize: '0.7rem' }}>
-                  Error: {uploadError}
-                </div>
-              )}
-
-              {uploadingStatus && (
-                <div style={{ color: 'var(--accent-cyan)', fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <RefreshCw className="spin" style={{ width: '12px', height: '12px' }} />
-                  {uploadingStatus}
-                </div>
-              )}
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
-                <button 
-                  type="button" 
-                  onClick={() => {
-                    setUploadModalOpen(false);
-                    setUploadError('');
-                    setUploadingStatus('');
-                  }}
-                  className="btn-tactical"
-                >
-                  CANCEL
-                </button>
-                <button 
-                  type="submit" 
-                  disabled={!!uploadingStatus}
-                  className="btn-tactical btn-tactical-active"
-                >
-                  INGEST ARCHIVE
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}
