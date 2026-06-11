@@ -156,6 +156,19 @@ class Database:
                 )
             """)
             
+            # LLM Command History Table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS llm_commands (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    sender TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at REAL NOT NULL,
+                    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+                )
+            """)
+            
             # Seed default project and pipelines if not present
             try:
                 # Check default project
@@ -181,6 +194,14 @@ class Database:
                             "INSERT INTO pipelines (id, project_id, name, description, type, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                             (p_id, proj_id, name, desc, p_type, time.time())
                         )
+                
+                # Check LLM command history seeding
+                cursor = conn.execute("SELECT COUNT(*) FROM llm_commands WHERE project_id = 'proj_default'")
+                if cursor.fetchone()[0] == 0:
+                    conn.execute(
+                        "INSERT INTO llm_commands (project_id, sender, text, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                        ("proj_default", "system", "ATR Assistant terminal online. Ask me to split datasets, configure augmentations, or run training runs.", None, time.time())
+                    )
             except Exception as e:
                 print(f"Error seeding default projects/pipelines: {e}")
             
@@ -494,3 +515,30 @@ class Database:
                 d["metadata"] = json.loads(d["metadata_json"]) if d["metadata_json"] else {}
                 res.append(d)
             return res
+
+    # --- LLM Command History Methods ---
+    def get_llm_commands(self, project_id):
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM llm_commands WHERE project_id = ? ORDER BY created_at ASC",
+                (project_id,)
+            ).fetchall()
+            res = []
+            for r in rows:
+                d = dict(r)
+                d["payload"] = json.loads(d["payload_json"]) if d["payload_json"] else None
+                res.append(d)
+            return res
+
+    def save_llm_command(self, project_id, sender, text, payload=None):
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO llm_commands (project_id, sender, text, payload_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (project_id, sender, text, json.dumps(payload) if payload else None, time.time())
+            )
+            conn.commit()
+
+    def clear_llm_commands(self, project_id):
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM llm_commands WHERE project_id = ?", (project_id,))
+            conn.commit()

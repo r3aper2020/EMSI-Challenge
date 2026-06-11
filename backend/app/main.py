@@ -140,6 +140,11 @@ class ExperimentCreate(BaseModel):
 class LLMCommandRequest(BaseModel):
     prompt: str
 
+class LLMCommandSaveRequest(BaseModel):
+    sender: str
+    text: str
+    payload: dict = None
+
 class SaveLabelsRequest(BaseModel):
     labels: list
 
@@ -662,10 +667,42 @@ def get_experiment_evaluation(exp_id: str):
         raise HTTPException(status_code=404, detail="Evaluation results not available yet")
     return eval_record
 
+@app.get("/api/projects/{project_id}/llm-commands")
+def get_project_llm_commands(project_id: str):
+    return db.get_llm_commands(project_id)
+
+@app.post("/api/projects/{project_id}/llm-commands")
+def save_project_llm_command(project_id: str, data: LLMCommandSaveRequest):
+    db.save_llm_command(
+        project_id=project_id,
+        sender=data.sender,
+        text=data.text,
+        payload=data.payload
+    )
+    return {"status": "success"}
+
+@app.delete("/api/projects/{project_id}/llm-commands")
+def clear_project_llm_commands(project_id: str):
+    db.clear_llm_commands(project_id)
+    # Re-seed the welcome message
+    db.save_llm_command(
+        project_id=project_id,
+        sender="system",
+        text="ATR Assistant terminal online. Ask me to split datasets, configure augmentations, or run training runs."
+    )
+    return {"status": "success"}
+
 @app.post("/api/llm/command")
 def process_llm_command(data: LLMCommandRequest):
     """Processes natural language command, triggers structured workflow backend actions."""
     try:
+        # Save user prompt
+        db.save_llm_command(
+            project_id="proj_default",
+            sender="user",
+            text=data.prompt
+        )
+        
         response = llm_service.process_command(data.prompt)
         
         # If successfully parsed into an action, run the action workflow
@@ -759,6 +796,27 @@ def process_llm_command(data: LLMCommandRequest):
                 }
                 response["message"] = f"Successfully cloned experiment '{source_id}', applied augmentations: {new_aug}, and started training job '{job_id}'."
                 
+            # Save system response with workflow result
+            db.save_llm_command(
+                project_id="proj_default",
+                sender="system",
+                text=response.get("message", ""),
+                payload=response.get("workflow_result")
+            )
+        else:
+            # Save fallback system response
+            db.save_llm_command(
+                project_id="proj_default",
+                sender="system",
+                text=response.get("message", "Processing completed.")
+            )
+            
         return response
     except Exception as e:
+        err_msg = f"Failed to execute command: {str(e)}"
+        db.save_llm_command(
+            project_id="proj_default",
+            sender="system",
+            text=err_msg
+        )
         raise HTTPException(status_code=500, detail=str(e))

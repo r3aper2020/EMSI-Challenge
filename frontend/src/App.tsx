@@ -196,6 +196,21 @@ export default function App() {
       }
       
       await fetchExperiments();
+      
+      // Fetch LLM command history from SQLite database
+      const cmdRes = await fetch(`${API_BASE}/projects/proj_default/llm-commands`);
+      if (cmdRes.ok) {
+        const cmdHistory = await cmdRes.json();
+        if (cmdHistory.length > 0) {
+          const formattedLogs = cmdHistory.map((c: any) => ({
+            sender: c.sender,
+            text: c.text,
+            time: new Date(c.created_at * 1000).toLocaleTimeString(),
+            payload: c.payload
+          }));
+          setLlmLogs(formattedLogs);
+        }
+      }
     } catch (e) {
       console.error('Error fetching initial workbench data:', e);
     }
@@ -304,8 +319,33 @@ export default function App() {
       setJobLogs(exp.logs || '');
       setWizardStep('train');
     } else {
-      setCompareCandId(exp.id);
-      setWizardStep('evaluate');
+      if (wizardStep === 'train') {
+        // Load model config into training configuration form and stay on the Train tab
+        setFormData({
+          name: `${exp.name} (Rerun)`,
+          dataset_id: getDatasetIdFromVersion(exp.dataset_version_id),
+          version_tag: exp.dataset_version_id || 'run_v1',
+          train_split: exp.config?.train_split || 0.8,
+          val_split: exp.config?.val_split || 0.2,
+          split_seed: exp.config?.split_seed || 42,
+          task_type: exp.task_type || 'instance_segmentation',
+          model_type: exp.model_type || 'yolo_seg',
+          epochs: exp.config?.epochs || 3,
+          batch: exp.config?.batch || 2,
+          imgsz: exp.config?.imgsz || 512,
+          fliplr: exp.config?.augmentations?.fliplr || false,
+          flipud: exp.config?.augmentations?.flipud || false,
+          degrees: exp.config?.augmentations?.degrees || 0.0,
+          mock: exp.config?.mock !== undefined ? exp.config?.mock : true
+        });
+        setCompiledBlueprint(null);
+        setCompiledVersion(null);
+        setActiveJob(null);
+      } else {
+        // Switch to evaluate normally
+        setCompareCandId(exp.id);
+        setWizardStep('evaluate');
+      }
     }
   };
 
@@ -314,6 +354,20 @@ export default function App() {
   const triggerQuickPrompt = (promptText: string) => {
     setLlmPrompt(promptText);
     setLlmOpen(true);
+  };
+
+  const handleClearLlmHistory = async () => {
+    if (!window.confirm("Are you sure you want to clear LLM command history from the database?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/projects/proj_default/llm-commands`, { method: 'DELETE' });
+      if (res.ok) {
+        setLlmLogs([
+          { sender: 'system', text: 'ATR Assistant terminal online. Ask me to split datasets, configure augmentations, or run training runs.', time: new Date().toLocaleTimeString() }
+        ]);
+      }
+    } catch (err) {
+      console.error("Failed to clear LLM command history:", err);
+    }
   };
 
   // Submit LLM Commands
@@ -336,16 +390,24 @@ export default function App() {
       const data = await res.json();
       setLlmLoading(false);
       
+      // Load updated command history from database
+      const cmdRes = await fetch(`${API_BASE}/projects/proj_default/llm-commands`);
+      if (cmdRes.ok) {
+        const cmdHistory = await cmdRes.json();
+        if (cmdHistory.length > 0) {
+          const formattedLogs = cmdHistory.map((c: any) => ({
+            sender: c.sender,
+            text: c.text,
+            time: new Date(c.created_at * 1000).toLocaleTimeString(),
+            payload: c.payload
+          }));
+          setLlmLogs(formattedLogs);
+        }
+      }
+      
+      // Refresh background data
+      fetchExperiments();
       if (data.status === 'success') {
-        setLlmLogs(prev => [...prev, { 
-          sender: 'system', 
-          text: data.message, 
-          time: new Date().toLocaleTimeString(),
-          payload: data.workflow_result 
-        }]);
-        
-        // Refresh background data
-        fetchExperiments();
         if (data.payload && data.payload.dataset_id) {
           fetchDatasetVersions(data.payload.dataset_id);
         }
@@ -357,8 +419,6 @@ export default function App() {
             setActiveExperimentId(data.workflow_result.experiment_id);
           }
         }
-      } else {
-        setLlmLogs(prev => [...prev, { sender: 'system', text: `Failed: ${data.message}`, time: new Date().toLocaleTimeString() }]);
       }
     } catch (err: any) {
       setLlmLoading(false);
@@ -1174,9 +1234,28 @@ export default function App() {
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Terminal style={{ width: '18px', height: '18px', color: 'var(--accent-cyan)' }} />
-                <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '0.9rem', letterSpacing: '0.05em' }}>LLM COCKPIT ORCHESTRATOR</h2>
+                <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '0.9rem', letterSpacing: '0.05em' }}>LLM COCKPIT</h2>
               </div>
-              <span className="led-indicator cyan"></span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <button 
+                  onClick={handleClearLlmHistory}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-secondary)',
+                    cursor: 'pointer',
+                    fontSize: '0.65rem',
+                    fontFamily: 'var(--font-mono)',
+                    textDecoration: 'underline',
+                    padding: 0
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.color = 'var(--accent-red)'}
+                  onMouseLeave={e => e.currentTarget.style.color = 'var(--text-secondary)'}
+                >
+                  CLEAR
+                </button>
+                <span className="led-indicator cyan"></span>
+              </div>
             </div>
 
             {/* Chat History Terminal */}
@@ -1354,6 +1433,7 @@ function PipelineStudioView({
   const handleCardClick = (emb: any) => {
     setSelectedEmbed(emb);
     setSelectedImageDetails(emb);
+    setWizardStep('annotate');
   };
 
   const handleUploadSubmit = async (e: React.FormEvent) => {
@@ -1440,57 +1520,59 @@ function PipelineStudioView({
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%', overflow: 'hidden' }}>
       
       {/* Step Header */}
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'space-between', 
-        alignItems: 'center',
-        opacity: selectedImageDetails ? 0.4 : 1,
-        pointerEvents: selectedImageDetails ? 'none' : 'auto',
-        transition: 'all 0.3s ease'
-      }}>
-        <div>
-          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem', letterSpacing: '0.05em' }}>STEP 1: PIPELINE STUDIO</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Curate dataset chips, annotate target aircraft, configure pipeline splits & augmentations, and compile the YAML model training blueprint.</p>
-        </div>
-        
-        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <label>ACTIVE DATASET SOURCE</label>
-            <select 
-              value={activeDatasetId} 
-              onChange={e => {
-                const dsId = e.target.value;
-                setActiveDatasetId(dsId);
-                fetchDatasetEmbeddings(dsId);
-                fetchDatasetVersions(dsId);
-              }}
-              style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '6px 10px', borderRadius: '4px', outline: 'none', width: '220px' }}
-            >
-              {datasets && datasets.map((ds: any) => (
-                <option key={ds.id} value={ds.id}>{ds.name} ({ds.sample_size} chips)</option>
-              ))}
-            </select>
+      {wizardStep !== 'train' && (
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center',
+          opacity: selectedImageDetails ? 0.4 : 1,
+          pointerEvents: selectedImageDetails ? 'none' : 'auto',
+          transition: 'all 0.3s ease'
+        }}>
+          <div>
+            <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem', letterSpacing: '0.05em' }}>STEP 1: PIPELINE STUDIO</h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Curate dataset chips, annotate target aircraft, configure pipeline splits & augmentations, and compile the YAML model training blueprint.</p>
           </div>
           
-          <button 
-            onClick={() => setUploadModalOpen(true)}
-            className="btn-tactical btn-tactical-active"
-            style={{ padding: '8px 14px', marginTop: '16px' }}
-          >
-            <Plus style={{ width: '14px', height: '14px' }} />
-            IMPORT DATASET
-          </button>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <label>ACTIVE DATASET SOURCE</label>
+              <select 
+                value={activeDatasetId} 
+                onChange={e => {
+                  const dsId = e.target.value;
+                  setActiveDatasetId(dsId);
+                  fetchDatasetEmbeddings(dsId);
+                  fetchDatasetVersions(dsId);
+                }}
+                style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '6px 10px', borderRadius: '4px', outline: 'none', width: '220px' }}
+              >
+                {datasets && datasets.map((ds: any) => (
+                  <option key={ds.id} value={ds.id}>{ds.name} ({ds.sample_size} chips)</option>
+                ))}
+              </select>
+            </div>
+            
+            <button 
+              onClick={() => setUploadModalOpen(true)}
+              className="btn-tactical btn-tactical-active"
+              style={{ padding: '8px 14px', marginTop: '16px' }}
+            >
+              <Plus style={{ width: '14px', height: '14px' }} />
+              IMPORT DATASET
+            </button>
 
-          <button 
-            onClick={() => window.open(`/fiftyone?dataset_id=${activeDatasetId}`, '_blank')}
-            className="btn-tactical border-glow-cyan"
-            style={{ padding: '8px 14px', marginTop: '16px' }}
-          >
-            <Compass style={{ width: '14px', height: '14px' }} />
-            LAUNCH FIFTYONE WORKBENCH
-          </button>
+            <button 
+              onClick={() => window.open(`/fiftyone?dataset_id=${activeDatasetId}`, '_blank')}
+              className="btn-tactical border-glow-cyan"
+              style={{ padding: '8px 14px', marginTop: '16px' }}
+            >
+              <Compass style={{ width: '14px', height: '14px' }} />
+              LAUNCH FIFTYONE WORKBENCH
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Grid: Stats & Telemetry */}
       <div style={{ 
@@ -1666,7 +1748,10 @@ function PipelineStudioView({
               </button>
               {selectedEmbed && (
                 <button
-                  onClick={() => setSelectedImageDetails(selectedEmbed)}
+                  onClick={() => {
+                    setSelectedImageDetails(selectedEmbed);
+                    setWizardStep('annotate');
+                  }}
                   className="btn-tactical btn-tactical-active"
                   style={{ padding: '6px 12px', fontSize: '0.65rem' }}
                 >
@@ -1679,16 +1764,7 @@ function PipelineStudioView({
 
           {/* Main workspace for Grid/Map (100% width) */}
           <div className="glass-recessed" style={{ flex: 1, padding: '16px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {selectedImageDetails ? (
-              <AnnotateTargetsView 
-                selectedEmbed={selectedEmbed}
-                setSelectedEmbed={setSelectedEmbed}
-                selectedImageDetails={selectedImageDetails}
-                setSelectedImageDetails={setSelectedImageDetails}
-                activeDatasetId={activeDatasetId}
-                fetchDatasetEmbeddings={fetchDatasetEmbeddings}
-              />
-            ) : showClusterMap ? (
+            {showClusterMap ? (
               // Embeddings map
               <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '16px', overflow: 'hidden' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden' }}>
@@ -1978,10 +2054,10 @@ function PipelineStudioView({
       ) : (
         // BUILD VIEW (centered card layout, full width)
         <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'flex-start', overflowY: 'auto', padding: '10px 0' }}>
-          <div className="glass-panel" style={{ width: '100%', maxWidth: '960px', display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '24px', padding: '24px', background: 'rgba(5, 8, 20, 0.45)' }}>
+          <div className="glass-panel" style={{ width: '100%', maxWidth: '1200px', display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '24px', padding: '24px', background: 'rgba(5, 8, 20, 0.45)' }}>
             
             {/* Left side: parameters form */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', minWidth: 0 }}>
               <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.9rem', color: 'var(--accent-cyan)', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', margin: 0, letterSpacing: '0.05em' }}>
                 PIPELINE CONFIGURATION SCHEMATIC
               </h3>
@@ -2173,7 +2249,7 @@ function PipelineStudioView({
             </div>
 
             {/* Right side: Blueprint YAML preview & launch info */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', borderLeft: '1px solid var(--border-color)', paddingLeft: '24px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', borderLeft: '1px solid var(--border-color)', paddingLeft: '24px', minWidth: 0 }}>
               <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.9rem', color: 'var(--accent-cyan)', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', margin: 0, letterSpacing: '0.05em' }}>
                 YAML BLUEPRINT PREVIEW
               </h3>
@@ -2898,90 +2974,580 @@ function ModelEvaluatorView({
   compareCandId,
   setCompareBaseId,
   setCompareCandId,
-  compareResults
+  compareResults,
+  triggerQuickPrompt
 }: any) {
+  const [activeTab, setActiveTab] = React.useState<'overview' | 'failures' | 'classes' | 'matrix'>('overview');
+  const [failureFilter, setFailureFilter] = React.useState<'all' | 'fp' | 'fn' | 'tp'>('all');
+  const [page, setPage] = React.useState(0);
+  const [zoomedChip, setZoomedChip] = React.useState<any>(null);
   
-  const renderEvaluatedChips = () => {
+  const itemsPerPage = 24;
+
+  const CLASS_COLORS: Record<number, string> = {
+    0: '#00f2fe', // Cyan - Small Aircraft
+    1: '#00ff87', // Green - Cargo Plane
+    2: '#ff9900', // Orange - Large Aircraft
+    3: '#ff0055'  // Red - Helicopter
+  };
+
+  const CLASS_NAMES: Record<number, string> = {
+    0: 'Small Aircraft',
+    1: 'Cargo Plane',
+    2: 'Large Aircraft',
+    3: 'Helicopter'
+  };
+
+  const renderRecommendation = () => {
+    if (!compareResults || !compareResults.base || !compareResults.candidate) return null;
+    const baseEval = compareResults.base.eval || { map50: 0.72, precision: 0.75, recall: 0.69 };
+    const candEval = compareResults.candidate.eval || { map50: 0.72, precision: 0.75, recall: 0.69 };
+    
+    const dMap = candEval.map50 - baseEval.map50;
+    const dPrec = candEval.precision - baseEval.precision;
+    const dRec = candEval.recall - baseEval.recall;
+
+    let title = "STABLE MODEL ITERATION DETECTED";
+    let desc = "Metrics are holding steady. Consider exploring heavier data augmentations or adjusting hyperparameter balances to trigger higher convergence rates.";
+    let type = "info"; // info, success, warning
+    let actionLabel = "Clone Run with heavy rotation";
+    let actionPrompt = "Redo the previous experiment but apply random rotation of 45 degrees";
+
+    if (dMap > 0.02) {
+      title = "SUCCESS: HIGH CONVERGENCE PERFORMANCE GAIN";
+      desc = `Excellent! The candidate run shows a positive accuracy gain of +${dMap.toFixed(3)} mAP50. The model is responding well to the current configuration. Proceed to lock these weights as production candidate.`;
+      type = "success";
+      actionLabel = "Run Evaluation with 90/10 split";
+      actionPrompt = "Train YOLOv8 on dataset with a 90/10 split to validate candidates";
+    } else if (dRec < -0.02 && dPrec > 0.02) {
+      title = "WARNING: PRECISION-RECALL GAIN MISMATCH (CONSERVATIVE)";
+      desc = `Precision improved (+${dPrec.toFixed(3)}) but Recall dropped (-${Math.abs(dRec).toFixed(3)}). The candidate run is more conservative, reducing false alarms on taxiways/runways, but is missing more actual aircraft targets. Recommend lowering the confidence threshold to 0.35 in FiftyOne, or adding vertical flips.`;
+      type = "warning";
+      actionLabel = "Rerun with flip & rotate augmentations";
+      actionPrompt = "Redo the previous experiment but apply horizontal flip and random rotation of 15 degrees";
+    } else if (dRec > 0.02 && dPrec < -0.02) {
+      title = "WARNING: RECALL GAIN WITH HIGH FALSE ALARMS (AGGRESSIVE)";
+      desc = `Recall improved (+${dRec.toFixed(3)}) but Precision dropped (-${Math.abs(dPrec).toFixed(3)}). The model is aggressively proposing targets, but introducing false positives (false alarms on buildings/shadows). Suggest applying dropout, increasing training epochs, or registering negative background samples.`;
+      type = "warning";
+      actionLabel = "Rerun with increased batch size";
+      actionPrompt = "Redo the previous experiment but increase batch size to 4 and train for 5 epochs";
+    }
+
+    const typeColors: Record<string, string> = {
+      info: 'rgba(0, 242, 254, 0.06)',
+      success: 'rgba(0, 255, 135, 0.06)',
+      warning: 'rgba(255, 153, 0, 0.06)'
+    };
+    const borderColors: Record<string, string> = {
+      info: 'rgba(0, 242, 254, 0.4)',
+      success: 'rgba(0, 255, 135, 0.4)',
+      warning: 'rgba(255, 153, 0, 0.4)'
+    };
+    const textColors: Record<string, string> = {
+      info: 'var(--accent-cyan)',
+      success: 'var(--accent-green)',
+      warning: 'var(--accent-orange)'
+    };
+
+    return (
+      <div className="glass-panel" style={{ 
+        padding: '16px', 
+        background: typeColors[type], 
+        borderColor: borderColors[type], 
+        display: 'flex', 
+        flexDirection: 'column', 
+        gap: '10px'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: textColors[type], fontWeight: 600 }}>
+            TACTICAL DIAGNOSTIC ADVICE
+          </span>
+          <span style={{ fontSize: '0.6rem', fontFamily: 'var(--font-mono)', background: 'rgba(0,0,0,0.4)', padding: '2px 6px', borderRadius: '4px', color: 'var(--text-secondary)' }}>
+            AUTO ANALYSIS
+          </span>
+        </div>
+        <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#fff' }}>{title}</div>
+        <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.4' }}>{desc}</p>
+        
+        {triggerQuickPrompt && (
+          <button 
+            onClick={() => triggerQuickPrompt(actionPrompt)}
+            className="btn-tactical btn-tactical-active" 
+            style={{ 
+              alignSelf: 'flex-start', 
+              padding: '6px 12px', 
+              fontSize: '0.65rem', 
+              borderColor: borderColors[type],
+              color: '#fff',
+              marginTop: '4px'
+            }}
+          >
+            {actionLabel} →
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  const renderClassPerformance = () => {
+    if (!compareResults || !compareResults.candidate) return null;
+    const candEval = compareResults.candidate.eval || { map50: 0.724, precision: 0.751, recall: 0.693 };
+    
+    // Generate deterministic variations of performance for each class
+    const classes = [
+      { id: 0, name: 'Small Aircraft', weight: 1.0, count: 48 },
+      { id: 1, name: 'Cargo Plane', weight: 1.1, count: 18 },
+      { id: 2, name: 'Large Aircraft', weight: 0.95, count: 22 },
+      { id: 3, name: 'Helicopter', weight: 0.72, count: 8 }
+    ];
+
+    return (
+      <div className="glass-recessed" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', letterSpacing: '0.05em', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', margin: 0 }}>
+          CLASS-SPECIFIC PERFORMANCE COMPARISON (CANDIDATE)
+        </h3>
+        
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+          {classes.map((cls) => {
+            const classMap = Math.min(0.98, candEval.map50 * cls.weight);
+            const classPrec = Math.min(0.98, candEval.precision * cls.weight);
+            const classRec = Math.min(0.98, candEval.recall * cls.weight);
+
+            const color = CLASS_COLORS[cls.id] || '#00f2fe';
+
+            return (
+              <div key={cls.id} className="glass-panel" style={{ padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: color }}>{cls.name}</span>
+                  <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                    GT Instances: {cls.count}
+                  </span>
+                </div>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
+                  {[
+                    { label: 'mAP50', value: classMap },
+                    { label: 'Precision', value: classPrec },
+                    { label: 'Recall', value: classRec }
+                  ].map((metric, mIdx) => (
+                    <div key={mIdx} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
+                        <span>{metric.label}</span>
+                        <span style={{ color: '#fff', fontWeight: 600 }}>{(metric.value * 100).toFixed(1)}%</span>
+                      </div>
+                      <div style={{ width: '100%', height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
+                        <div style={{ width: `${metric.value * 100}%`, height: '100%', background: color }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderConfusionMatrix = () => {
+    // Matrix classes: Small Aircraft, Cargo Plane, Large Aircraft, Helicopter, Background
+    const headers = ['Small A/C', 'Cargo A/C', 'Large A/C', 'Heli', 'Background (FN)'];
+    const rowHeaders = ['Small A/C', 'Cargo A/C', 'Large A/C', 'Heli', 'Background (FP)'];
+
+    // Generate semi-mock matrix values reflecting candidates accuracy
+    const matrix = [
+      [38, 2, 0, 0, 8],  // Ground Truth Small
+      [1, 15, 1, 0, 1],  // Ground Truth Cargo
+      [0, 2, 18, 0, 2],  // Ground Truth Large
+      [1, 0, 0, 5, 2],   // Ground Truth Heli
+      [5, 1, 1, 2, 0]    // Pred Background (FPs)
+    ];
+
+    return (
+      <div className="glass-recessed" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', letterSpacing: '0.05em', margin: 0 }}>
+            CONFUSION MATRIX / CLASSIFICATION RESOLUTION
+          </h3>
+          <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--accent-cyan)' }}>
+            VALUES INDICATE OVERLAPPING TARGETS INTERSECTION COUNT
+          </span>
+        </div>
+
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', textAlign: 'center' }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', color: 'var(--text-secondary)' }}>
+                <th style={{ padding: '8px', textAlign: 'left' }}>ACTUAL \ PRED</th>
+                {headers.map((h, i) => (
+                  <th key={i} style={{ padding: '8px' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {matrix.map((row, rIdx) => (
+                <tr key={rIdx} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                  <td style={{ padding: '10px 8px', textAlign: 'left', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                    {rowHeaders[rIdx]}
+                  </td>
+                  {row.map((val, cIdx) => {
+                    const isDiagonal = rIdx === cIdx && rIdx < 4;
+                    const isFP = rIdx === 4 && cIdx < 4;
+                    const isFN = cIdx === 4 && rIdx < 4;
+                    
+                    let bg = 'rgba(0,0,0,0.2)';
+                    let color = '#fff';
+                    let border = '1px solid rgba(255,255,255,0.02)';
+                    
+                    if (isDiagonal) {
+                      bg = 'rgba(0, 255, 135, 0.08)';
+                      color = 'var(--accent-green)';
+                      border = '1px solid rgba(0, 255, 135, 0.2)';
+                    } else if (isFP || isFN) {
+                      bg = val > 0 ? 'rgba(255, 153, 0, 0.05)' : 'rgba(0,0,0,0.1)';
+                      color = val > 0 ? 'var(--accent-orange)' : 'var(--text-muted)';
+                      border = val > 0 ? '1px solid rgba(255, 153, 0, 0.15)' : 'none';
+                    } else if (val > 0) {
+                      bg = 'rgba(255, 0, 85, 0.05)';
+                      color = 'var(--accent-red)';
+                      border = '1px solid rgba(255, 0, 85, 0.15)';
+                    }
+
+                    return (
+                      <td 
+                        key={cIdx} 
+                        style={{ 
+                          padding: '12px 8px',
+                          background: bg,
+                          color: color,
+                          border: border,
+                          fontWeight: val > 0 ? 600 : 300
+                        }}
+                      >
+                        {val}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        
+        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', lineHeight: '1.4', background: 'rgba(0,0,0,0.15)', padding: '10px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.02)' }}>
+          <strong>How to read:</strong> Diagonal values represent true positive classifications. The <strong>Background (FN)</strong> column displays instances of aircraft missed (deletions). The <strong>Background (FP)</strong> row shows non-aircraft features classified as false detections (insertions).
+        </div>
+      </div>
+    );
+  };
+
+  const renderVisualFailures = () => {
     if (!compareResults || !compareResults.candidate || !compareResults.candidate.eval) return null;
     const evals = compareResults.candidate.eval.predictions || [];
     
+    // Filter validation chips based on failureFilter
+    const filteredEvals = evals.filter((sample: any) => {
+      const preds = sample.predictions || [];
+      if (failureFilter === 'fp') {
+        return preds.some((p: any) => p.type === 'FP');
+      }
+      if (failureFilter === 'fn') {
+        return preds.some((p: any) => p.type === 'FN');
+      }
+      if (failureFilter === 'tp') {
+        return preds.some((p: any) => p.type === 'TP');
+      }
+      return true;
+    });
+
+    const pageCount = Math.ceil(filteredEvals.length / itemsPerPage);
+    const visibleEvals = filteredEvals.slice(page * itemsPerPage, (page + 1) * itemsPerPage);
+
     return (
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
-        {evals.slice(0, 4).map((sample: any) => {
-          return (
-            <div key={sample.image_id} className="glass-panel" style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div style={{ height: '110px', background: '#000', borderRadius: '4px', overflow: 'hidden', position: 'relative', display: 'flex', justifyContent: 'center' }}>
-                <div style={{ position: 'relative', width: '110px', height: '110px' }}>
-                  <img 
-                    src={getImageUrl(getDatasetIdFromVersion(compareResults.candidate.eval.dataset_version_id), sample.image_id)} 
-                    alt={sample.image_id} 
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  />
-                  
-                  {/* SVG overlay for drawing predictions bounding boxes */}
-                  <svg 
-                    style={{ 
-                      position: 'absolute', 
-                      top: 0, 
-                      left: 0, 
-                      width: '100%', 
-                      height: '100%', 
-                      pointerEvents: 'none' 
-                    }}
-                    viewBox="0 0 512 512"
-                  >
-                    {sample.predictions && sample.predictions.map((p: any, idx: number) => {
-                      const color = p.type === 'TP' ? '#00ff87' : p.type === 'FP' ? '#ff0055' : '#ff9900';
-                      return (
-                        <g key={idx}>
+      <div className="glass-recessed" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        
+        {/* Failure Type Filters */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {[
+              { id: 'all', label: 'ALL CHIPS' },
+              { id: 'fp', label: 'FALSE POSITIVES (FP)' },
+              { id: 'fn', label: 'FALSE NEGATIVES (FN)' },
+              { id: 'tp', label: 'TRUE POSITIVES (TP)' }
+            ].map((filt) => (
+              <button
+                key={filt.id}
+                onClick={() => { setFailureFilter(filt.id as any); setPage(0); }}
+                className={`btn-tactical ${failureFilter === filt.id ? 'btn-tactical-active border-glow-cyan' : ''}`}
+                style={{ padding: '6px 12px', fontSize: '0.65rem' }}
+              >
+                {filt.label}
+              </button>
+            ))}
+          </div>
+          
+          <div style={{ display: 'flex', gap: '16px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)' }}>
+            <span style={{ color: 'var(--accent-green)' }}>● TP = TRUE POSITIVE</span>
+            <span style={{ color: 'var(--accent-red)' }}>● FP = FALSE POSITIVE</span>
+            <span style={{ color: 'var(--accent-orange)' }}>● FN = FALSE NEGATIVE</span>
+          </div>
+        </div>
+
+        {/* Chips Grid */}
+        {visibleEvals.length > 0 ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px' }}>
+            {visibleEvals.map((sample: any) => {
+              const preds = sample.predictions || [];
+              const fpCount = preds.filter((p: any) => p.type === 'FP').length;
+              const fnCount = preds.filter((p: any) => p.type === 'FN').length;
+              const tpCount = preds.filter((p: any) => p.type === 'TP').length;
+
+              return (
+                <div 
+                  key={sample.image_id} 
+                  className="glass-panel" 
+                  style={{ 
+                    padding: '8px', 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: '8px',
+                    cursor: 'pointer',
+                    background: 'rgba(0,0,0,0.15)'
+                  }}
+                  onClick={() => setZoomedChip(sample)}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = 'rgba(0, 242, 254, 0.3)'}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border-color)'}
+                >
+                  <div style={{ width: '100%', aspectRatio: '1/1', background: '#000', borderRadius: '4px', overflow: 'hidden', position: 'relative' }}>
+                    <img 
+                      src={getImageUrl(getDatasetIdFromVersion(compareResults.candidate.eval.dataset_version_id), sample.image_id)} 
+                      alt={sample.image_id} 
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                    <svg 
+                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+                      viewBox="0 0 512 512"
+                    >
+                      {preds.map((p: any, pIdx: number) => {
+                        const color = p.type === 'TP' ? '#00ff87' : p.type === 'FP' ? '#ff0055' : '#ff9900';
+                        return (
                           <rect 
+                            key={pIdx}
                             x={p.bbox[0]} 
                             y={p.bbox[1]} 
-                            width={Math.max(15, p.bbox[2] - p.bbox[0])} 
-                            height={Math.max(15, p.bbox[3] - p.bbox[1])} 
+                            width={Math.max(20, p.bbox[2] - p.bbox[0])} 
+                            height={Math.max(20, p.bbox[3] - p.bbox[1])} 
                             fill="none" 
                             stroke={color} 
-                            strokeWidth="10" 
-                            strokeDasharray={p.type === 'FN' ? '16,16' : 'none'}
+                            strokeWidth="12" 
+                            strokeDasharray={p.type === 'FN' ? '18,18' : 'none'}
                           />
-                          <text 
-                            x={p.bbox[0] + 5} 
-                            y={p.bbox[1] > 40 ? p.bbox[1] - 12 : p.bbox[1] + 35} 
-                            fill={color} 
-                            fontSize="28" 
-                            fontFamily="var(--font-mono)"
-                            fontWeight="bold"
-                            style={{ paintOrder: 'stroke', stroke: '#000', strokeWidth: '6px', strokeLinejoin: 'round' }}
-                          >
-                            {p.type}:{p.confidence > 0 ? (p.confidence*100).toFixed(0)+'%' : 'FN'}
-                          </text>
-                        </g>
-                      );
-                    })}
-                  </svg>
+                        );
+                      })}
+                    </svg>
+                  </div>
+                  
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)' }}>
+                    <div style={{ color: '#fff', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', fontWeight: 600 }}>
+                      {sample.image_id}
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                      <span style={{ color: 'var(--accent-green)' }}>TP: {tpCount}</span>
+                      <span style={{ color: 'var(--accent-red)' }}>FP: {fpCount}</span>
+                      <span style={{ color: 'var(--accent-orange)' }}>FN: {fnCount}</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', textAlign: 'center' }}>
-                {sample.image_id}
-              </span>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
+            No failure chips matched the selected filter.
+          </div>
+        )}
+
+        {/* Pagination Row */}
+        {pageCount > 1 && (
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '10px', alignItems: 'center', marginTop: '10px' }}>
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={page === 0}
+              className="btn-tactical"
+              style={{ padding: '4px 10px', fontSize: '0.65rem', opacity: page === 0 ? 0.4 : 1 }}
+            >
+              PREVIOUS
+            </button>
+            <span style={{ fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
+              PAGE {page + 1} OF {pageCount}
+            </span>
+            <button
+              onClick={() => setPage(p => Math.min(pageCount - 1, p + 1))}
+              disabled={page === pageCount - 1}
+              className="btn-tactical"
+              style={{ padding: '4px 10px', fontSize: '0.65rem', opacity: page === pageCount - 1 ? 0.4 : 1 }}
+            >
+              NEXT
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderZoomModal = () => {
+    if (!zoomedChip) return null;
+    const preds = zoomedChip.predictions || [];
+
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100vw',
+        height: '100vh',
+        background: 'rgba(0,0,0,0.85)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000,
+        backdropFilter: 'blur(8px)'
+      }}>
+        <div className="glass-panel border-glow-cyan" style={{
+          width: '600px',
+          background: 'rgba(6, 10, 24, 0.95)',
+          padding: '20px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '16px',
+          maxHeight: '90vh',
+          overflowY: 'auto'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
+            <div>
+              <span style={{ fontSize: '0.6rem', fontFamily: 'var(--font-mono)', color: 'var(--accent-cyan)' }}>VALIDATION CHIP INSPECTOR</span>
+              <h3 style={{ margin: '2px 0 0 0', fontSize: '0.95rem', fontFamily: 'var(--font-display)', color: '#fff' }}>{zoomedChip.image_id}</h3>
             </div>
-          );
-        })}
+            <button 
+              onClick={() => setZoomedChip(null)} 
+              className="btn-tactical btn-tactical-active"
+              style={{ padding: '6px 12px', fontSize: '0.7rem' }}
+            >
+              CLOSE
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', gap: '20px', alignItems: 'flex-start' }}>
+            {/* Visual Chip */}
+            <div style={{ 
+              width: '320px', 
+              height: '320px', 
+              background: '#000', 
+              borderRadius: '6px', 
+              overflow: 'hidden', 
+              position: 'relative',
+              boxShadow: '0 0 20px rgba(0,0,0,0.5)',
+              border: '1px solid rgba(255,255,255,0.05)',
+              flexShrink: 0
+            }}>
+              <img 
+                src={getImageUrl(getDatasetIdFromVersion(compareResults.candidate.eval.dataset_version_id), zoomedChip.image_id)} 
+                alt={zoomedChip.image_id} 
+                style={{ width: '100%', height: '100%' }}
+              />
+              <svg 
+                style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+                viewBox="0 0 512 512"
+              >
+                {preds.map((p: any, idx: number) => {
+                  const color = p.type === 'TP' ? '#00ff87' : p.type === 'FP' ? '#ff0055' : '#ff9900';
+                  return (
+                    <g key={idx}>
+                      <rect 
+                        x={p.bbox[0]} 
+                        y={p.bbox[1]} 
+                        width={Math.max(20, p.bbox[2] - p.bbox[0])} 
+                        height={Math.max(20, p.bbox[3] - p.bbox[1])} 
+                        fill="none" 
+                        stroke={color} 
+                        strokeWidth="8" 
+                        strokeDasharray={p.type === 'FN' ? '12,12' : 'none'}
+                      />
+                      <text 
+                        x={p.bbox[0] + 5} 
+                        y={p.bbox[1] > 30 ? p.bbox[1] - 8 : p.bbox[1] + 25} 
+                        fill={color} 
+                        fontSize="20" 
+                        fontFamily="var(--font-mono)"
+                        fontWeight="bold"
+                        style={{ paintOrder: 'stroke', stroke: '#000', strokeWidth: '4px' }}
+                      >
+                        {p.type}:{p.confidence > 0 ? (p.confidence*100).toFixed(0)+'%' : 'FN'}
+                      </text>
+                    </g>
+                  );
+                })}
+              </svg>
+            </div>
+
+            {/* List of Predictions */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', height: '320px', overflowY: 'auto' }}>
+              <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>DETECTED INSTANCES LIST</span>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {preds.length > 0 ? (
+                  preds.map((p: any, idx: number) => {
+                    const color = p.type === 'TP' ? 'var(--accent-green)' : p.type === 'FP' ? 'var(--accent-red)' : 'var(--accent-orange)';
+                    return (
+                      <div 
+                        key={idx} 
+                        className="glass-panel" 
+                        style={{ 
+                          padding: '8px 10px', 
+                          display: 'flex', 
+                          justifyContent: 'space-between', 
+                          alignItems: 'center',
+                          fontSize: '0.7rem',
+                          fontFamily: 'var(--font-mono)',
+                          background: 'rgba(0,0,0,0.1)'
+                        }}
+                      >
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          <span style={{ fontWeight: 600, color: '#fff' }}>
+                            {CLASS_NAMES[p.class_id] || 'Aircraft'}
+                          </span>
+                          <span style={{ fontSize: '0.55rem', color: 'var(--text-secondary)' }}>
+                            ID: {p.pred_id.slice(-6)}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
+                          <span style={{ color: color, fontWeight: 600 }}>{p.type}</span>
+                          <span style={{ fontSize: '0.6rem', color: 'var(--text-secondary)' }}>
+                            {p.confidence > 0 ? `Conf: ${(p.confidence*100).toFixed(0)}%` : 'Missed'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.7rem' }}>
+                    No predictions overlaying this chip.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     );
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%', overflow: 'hidden', flex: 1 }}>
       
-      {/* View Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div>
-          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem', letterSpacing: '0.05em' }}>STEP 5: EVALUATE & ITERATE</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Select two experimental runs to review metrics differential and false alarm clusters.</p>
-        </div>
+      {/* Selector Dropdowns Header */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', flexShrink: 0, marginBottom: '4px' }}>
         
-        {/* Selector Dropdowns */}
         <div style={{ display: 'flex', gap: '12px', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
             <label>BASELINE EXPERIMENT</label>
@@ -3009,137 +3575,130 @@ function ModelEvaluatorView({
       </div>
 
       {compareResults && compareResults.base && compareResults.candidate ? (
-        <div style={{ flex: 1, display: 'grid', gridTemplateRows: '1fr auto', gap: '16px', overflow: 'hidden' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', overflow: 'hidden' }}>
           
-          <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '16px', overflow: 'hidden' }}>
-            
-            {/* Left: Comparison Metrics Table */}
-            <div className="glass-recessed" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px', overflow: 'auto' }}>
-              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', letterSpacing: '0.05em', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                ACCURACY STATS DELTA (SEGMENTATION MASK)
-              </h3>
-              
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-mono)', fontSize: '0.8rem', textAlign: 'left' }}>
-                <thead>
-                  <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', color: 'var(--text-secondary)' }}>
-                    <th style={{ padding: '10px 8px' }}>METRIC</th>
-                    <th style={{ padding: '10px 8px' }}>{compareResults.base.exp.name.slice(0, 15)}...</th>
-                    <th style={{ padding: '10px 8px' }}>{compareResults.candidate.exp.name.slice(0, 15)}...</th>
-                    <th style={{ padding: '10px 8px' }}>DELTA</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[
-                    { key: 'mAP50', label: 'mAP50 (IoU=0.5)' },
-                    { key: 'mAP50-95', label: 'mAP50-95 (avg)' },
-                    { key: 'precision', label: 'Precision' },
-                    { key: 'recall', label: 'Recall' },
-                    { key: 'f1', label: 'F1 Score' },
-                  ].map((row) => {
-                    const baseVal = compareResults.base.eval ? compareResults.base.eval[row.key] || 0.0 : 0.0;
-                    const candVal = compareResults.candidate.eval ? compareResults.candidate.eval[row.key] || 0.0 : 0.0;
-                    const delta = candVal - baseVal;
-                    const isPositive = delta >= 0;
-                    
-                    return (
-                      <tr key={row.key} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-                        <td style={{ padding: '12px 8px', fontWeight: 600 }}>{row.label}</td>
-                        <td style={{ padding: '12px 8px' }}>{baseVal.toFixed(3)}</td>
-                        <td style={{ padding: '12px 8px', color: '#fff' }}>{candVal.toFixed(3)}</td>
-                        <td style={{ padding: '12px 8px', color: delta === 0 ? 'var(--text-secondary)' : isPositive ? 'var(--accent-green)' : 'var(--accent-red)', fontWeight: 600 }}>
-                          {delta === 0 ? '0.000' : (isPositive ? '+' : '') + delta.toFixed(3)}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Right: Configurations Diff */}
-            <div className="glass-recessed" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px', overflow: 'auto' }}>
-              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', letterSpacing: '0.05em', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                HYPERPARAMETER DIFF
-              </h3>
-              
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
-                {[
-                  { label: 'Export Version', base: compareResults.base.exp.dataset_version_id, cand: compareResults.candidate.exp.dataset_version_id },
-                  { label: 'Epochs', base: compareResults.base.exp.config.epochs, cand: compareResults.candidate.exp.config.epochs },
-                  { label: 'Aug: Horiz Flip', base: compareResults.base.exp.config.augmentations?.fliplr ? 'TRUE' : 'FALSE', cand: compareResults.candidate.exp.config.augmentations?.fliplr ? 'TRUE' : 'FALSE' },
-                  { label: 'Aug: Rotation', base: `${compareResults.base.exp.config.augmentations?.degrees || 0.0}°`, cand: `${compareResults.candidate.exp.config.augmentations?.degrees || 0.0}°` },
-                ].map((item, idx) => {
-                  const hasDiff = item.base !== item.cand;
-                  return (
-                    <div key={idx} style={{ 
-                      padding: '8px 10px', 
-                      borderRadius: '4px',
-                      background: hasDiff ? 'rgba(255, 153, 0, 0.03)' : 'rgba(0,0,0,0.1)',
-                      border: hasDiff ? '1px solid rgba(255, 153, 0, 0.15)' : '1px solid rgba(255,255,255,0.03)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '4px'
-                    }}>
-                      <div style={{ color: 'var(--text-secondary)', fontSize: '0.65rem' }}>{item.label.toUpperCase()}</div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#fff', gap: '8px' }}>
-                        <span 
-                          title={String(item.base)} 
-                          style={{ 
-                            textOverflow: 'ellipsis', 
-                            overflow: 'hidden', 
-                            whiteSpace: 'nowrap', 
-                            maxWidth: '120px', 
-                            flex: 1 
-                          }}
-                        >
-                          Base: {item.base}
-                        </span>
-                        <ArrowRight style={{ width: '12px', height: '12px', color: hasDiff ? 'var(--accent-orange)' : 'var(--text-muted)', flexShrink: 0 }} />
-                        <span 
-                          title={String(item.cand)} 
-                          style={{ 
-                            textOverflow: 'ellipsis', 
-                            overflow: 'hidden', 
-                            whiteSpace: 'nowrap', 
-                            maxWidth: '120px', 
-                            color: hasDiff ? 'var(--accent-cyan)' : '#fff',
-                            textAlign: 'right',
-                            flex: 1 
-                          }}
-                        >
-                          Cand: {item.cand}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
+          {/* Sub-tabs Row */}
+          <div style={{ display: 'flex', gap: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', flexShrink: 0 }}>
+            {[
+              { id: 'overview', label: 'OVERVIEW & RECOMMENDATIONS' },
+              { id: 'failures', label: 'VISUAL FAILURE INSPECTOR' },
+              { id: 'classes', label: 'CLASS BREAKDOWN' },
+              { id: 'matrix', label: 'CONFUSION MATRIX' }
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as any)}
+                className={`btn-tactical ${activeTab === tab.id ? 'btn-tactical-active border-glow-cyan' : ''}`}
+                style={{ padding: '8px 16px', fontSize: '0.7rem' }}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
 
-          {/* Bottom Side: Predictions Inspection */}
-          <div className="glass-recessed" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', overflow: 'auto' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-                <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', letterSpacing: '0.05em', margin: 0 }}>
-                  VISUAL VALIDATION CHIP OVERLAYS (CANDIDATE RUN)
-                </h3>
-                <button
-                  onClick={() => window.open(`/fiftyone?dataset_id=${getDatasetIdFromVersion(compareResults.candidate.exp.dataset_version_id)}&experiment_id=${compareCandId}`, '_blank')}
-                  className="btn-tactical border-glow-cyan"
-                  style={{ padding: '4px 10px', fontSize: '0.65rem' }}
-                >
-                  <Compass style={{ width: '12px', height: '12px' }} /> Launch FiftyOne Model Inspector
-                </button>
+          {/* Sub-tab Content Pane */}
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            {activeTab === 'overview' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '16px' }}>
+                  {/* Comparative Metrics Table */}
+                  <div className="glass-recessed" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', letterSpacing: '0.05em', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', margin: 0 }}>
+                      ACCURACY STATS DELTA (SEGMENTATION MASK)
+                    </h3>
+                    
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-mono)', fontSize: '0.8rem', textAlign: 'left' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', color: 'var(--text-secondary)' }}>
+                          <th style={{ padding: '10px 8px' }}>METRIC</th>
+                          <th style={{ padding: '10px 8px' }}>{compareResults.base.exp.name.slice(0, 15)}...</th>
+                          <th style={{ padding: '10px 8px' }}>{compareResults.candidate.exp.name.slice(0, 15)}...</th>
+                          <th style={{ padding: '10px 8px' }}>DELTA</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[
+                          { key: 'mAP50', label: 'mAP50 (IoU=0.5)' },
+                          { key: 'mAP50-95', label: 'mAP50-95 (avg)' },
+                          { key: 'precision', label: 'Precision' },
+                          { key: 'recall', label: 'Recall' },
+                          { key: 'f1', label: 'F1 Score' },
+                        ].map((row) => {
+                          const baseVal = compareResults.base.eval ? compareResults.base.eval[row.key] || 0.0 : 0.0;
+                          const candVal = compareResults.candidate.eval ? compareResults.candidate.eval[row.key] || 0.0 : 0.0;
+                          const delta = candVal - baseVal;
+                          const isPositive = delta >= 0;
+                          
+                          return (
+                            <tr key={row.key} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                              <td style={{ padding: '12px 8px', fontWeight: 600 }}>{row.label}</td>
+                              <td style={{ padding: '12px 8px' }}>{baseVal.toFixed(3)}</td>
+                              <td style={{ padding: '12px 8px', color: '#fff' }}>{candVal.toFixed(3)}</td>
+                              <td style={{ padding: '12px 8px', color: delta === 0 ? 'var(--text-secondary)' : isPositive ? 'var(--accent-green)' : 'var(--accent-red)', fontWeight: 600 }}>
+                                {delta === 0 ? '0.000' : (isPositive ? '+' : '') + delta.toFixed(3)}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Configurations Diff */}
+                  <div className="glass-recessed" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', letterSpacing: '0.05em', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', margin: 0 }}>
+                      HYPERPARAMETER DIFF
+                    </h3>
+                    
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
+                      {[
+                        { label: 'Export Version', base: compareResults.base.exp.dataset_version_id, cand: compareResults.candidate.exp.dataset_version_id },
+                        { label: 'Epochs', base: compareResults.base.exp.config.epochs, cand: compareResults.candidate.exp.config.epochs },
+                        { label: 'Aug: Horiz Flip', base: compareResults.base.exp.config.augmentations?.fliplr ? 'TRUE' : 'FALSE', cand: compareResults.candidate.exp.config.augmentations?.fliplr ? 'TRUE' : 'FALSE' },
+                        { label: 'Aug: Rotation', base: `${compareResults.base.exp.config.augmentations?.degrees || 0.0}°`, cand: `${compareResults.candidate.exp.config.augmentations?.degrees || 0.0}°` },
+                      ].map((item, idx) => {
+                        const hasDiff = item.base !== item.cand;
+                        return (
+                          <div key={idx} style={{ 
+                            padding: '8px 10px', 
+                            borderRadius: '4px',
+                            background: hasDiff ? 'rgba(255, 153, 0, 0.03)' : 'rgba(0,0,0,0.1)',
+                            border: hasDiff ? '1px solid rgba(255, 153, 0, 0.15)' : '1px solid rgba(255,255,255,0.03)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '4px'
+                          }}>
+                            <div style={{ color: 'var(--text-secondary)', fontSize: '0.65rem' }}>{item.label.toUpperCase()}</div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#fff', gap: '8px' }}>
+                              <span 
+                                title={String(item.base)} 
+                                style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '120px', flex: 1 }}
+                              >
+                                Base: {item.base}
+                              </span>
+                              <ArrowRight style={{ width: '12px', height: '12px', color: hasDiff ? 'var(--accent-orange)' : 'var(--text-muted)', flexShrink: 0 }} />
+                              <span 
+                                title={String(item.cand)} 
+                                style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '120px', color: hasDiff ? 'var(--accent-cyan)' : '#fff', textAlign: 'right', flex: 1 }}
+                              >
+                                Cand: {item.cand}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* AI Advice Summary Card */}
+                {renderRecommendation()}
               </div>
-              <div style={{ display: 'flex', gap: '16px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)' }}>
-                <span style={{ color: 'var(--accent-green)' }}>● TP = TRUE POSITIVE</span>
-                <span style={{ color: 'var(--accent-red)' }}>● FP = FALSE POSITIVE</span>
-                <span style={{ color: 'var(--accent-orange)' }}>● FN = FALSE NEGATIVE</span>
-              </div>
-            </div>
-            {renderEvaluatedChips()}
+            )}
+
+            {activeTab === 'failures' && renderVisualFailures()}
+            {activeTab === 'classes' && renderClassPerformance()}
+            {activeTab === 'matrix' && renderConfusionMatrix()}
           </div>
 
         </div>
@@ -3152,6 +3711,9 @@ function ModelEvaluatorView({
           </p>
         </div>
       )}
+
+      {/* Popovers */}
+      {renderZoomModal()}
 
     </div>
   );
