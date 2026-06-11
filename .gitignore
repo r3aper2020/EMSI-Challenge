@@ -1,0 +1,34 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+.env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node / frontend build
+node_modules/
+dist/
+dist-ssr/
+*.local
+.eslintcache
+
+# Large data files and dynamic storage
+backend/data/
+backend/rareplanes_test.zip
+extracted_content.txt
+
+# Databases
+*.db
+*.db-journal
+*.sqlite3
+
+# OS metadata
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

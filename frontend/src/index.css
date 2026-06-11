@@ -1,0 +1,289 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg-primary: #04060f;
+  --bg-secondary: #090e1f;
+  --card-bg: rgba(13, 20, 38, 0.45);
+  --card-bg-recessed: rgba(4, 6, 15, 0.7);
+  --border-color: rgba(255, 255, 255, 0.1);
+  --border-glow: rgba(0, 242, 254, 0.15);
+  
+  --accent-cyan: #00f2fe;
+  --accent-blue: #0072ff;
+  --accent-green: #00ff87;
+  --accent-orange: #ff9900;
+  --accent-red: #ff0055;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #475569;
+  
+  --font-main: 'Plus Jakarta Sans', sans-serif;
+  --font-mono: 'Space Grotesk', monospace;
+  --font-display: 'Orbitron', sans-serif;
+  
+  --glass-gradient: linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0.03) 100%);
+  --tech-border-cyan: 1px solid rgba(0, 242, 254, 0.3);
+  --tech-border-green: 1px solid rgba(0, 255, 135, 0.3);
+  --tech-border-orange: 1px solid rgba(255, 153, 0, 0.3);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-main);
+  overflow-x: hidden;
+  height: 100vh;
+  width: 100vw;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-cyan);
+}
+
+/* Mesh Radial Gradient Background */
+.mesh-background {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: -2;
+  background-color: var(--bg-primary);
+  overflow: hidden;
+}
+
+.mesh-blob-1 {
+  position: absolute;
+  top: -10%;
+  left: -10%;
+  width: 50%;
+  height: 60%;
+  background: radial-gradient(circle, rgba(0, 114, 255, 0.15) 0%, transparent 70%);
+  filter: blur(80px);
+  animation: float-blob-1 25s infinite alternate ease-in-out;
+}
+
+.mesh-blob-2 {
+  position: absolute;
+  bottom: -10%;
+  right: -10%;
+  width: 60%;
+  height: 60%;
+  background: radial-gradient(circle, rgba(0, 242, 254, 0.12) 0%, transparent 75%);
+  filter: blur(100px);
+  animation: float-blob-2 20s infinite alternate ease-in-out;
+}
+
+.mesh-blob-3 {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  width: 45%;
+  height: 45%;
+  background: radial-gradient(circle, rgba(255, 0, 85, 0.04) 0%, transparent 60%);
+  filter: blur(90px);
+  animation: float-blob-3 30s infinite alternate ease-in-out;
+}
+
+/* Tactical Grid Overlay */
+.tactical-grid {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: -1;
+  background-image: 
+    linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  opacity: 0.8;
+}
+
+/* Keyframe animations for background blobs */
+@keyframes float-blob-1 {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(10vw, 5vh) scale(1.1); }
+}
+@keyframes float-blob-2 {
+  0% { transform: translate(0, 0) scale(1.1); }
+  100% { transform: translate(-8vw, -10vh) scale(0.9); }
+}
+@keyframes float-blob-3 {
+  0% { transform: translate(-5vw, 5vh) scale(0.95); }
+  100% { transform: translate(5vw, -5vh) scale(1.05); }
+}
+
+/* Glassmorphism Panel styles */
+.glass-panel {
+  background: var(--card-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-panel:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Deep Recessed Panel */
+.glass-recessed {
+  background: var(--card-bg-recessed);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6);
+  border-radius: 12px;
+}
+
+/* Glowing tech border modifiers */
+.border-glow-cyan {
+  border: var(--tech-border-cyan);
+  box-shadow: 0 0 15px rgba(0, 242, 254, 0.12), inset 0 0 10px rgba(0, 242, 254, 0.05);
+}
+.border-glow-green {
+  border: var(--tech-border-green);
+  box-shadow: 0 0 15px rgba(0, 255, 135, 0.12), inset 0 0 10px rgba(0, 255, 135, 0.05);
+}
+.border-glow-orange {
+  border: var(--tech-border-orange);
+  box-shadow: 0 0 15px rgba(255, 153, 0, 0.12), inset 0 0 10px rgba(255, 153, 0, 0.05);
+}
+
+/* High-tech Gradient Text */
+.gradient-text-cyan {
+  background: linear-gradient(90deg, #fff 30%, var(--accent-cyan) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.gradient-text-green {
+  background: linear-gradient(90deg, #fff 30%, var(--accent-green) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Tactical LED blinking indicators */
+.led-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.led-indicator.cyan {
+  background-color: var(--accent-cyan);
+  box-shadow: 0 0 8px var(--accent-cyan);
+}
+.led-indicator.green {
+  background-color: var(--accent-green);
+  box-shadow: 0 0 8px var(--accent-green);
+}
+.led-indicator.orange {
+  background-color: var(--accent-orange);
+  box-shadow: 0 0 8px var(--accent-orange);
+  animation: led-blink 1.5s infinite ease-in-out;
+}
+.led-indicator.red {
+  background-color: var(--accent-red);
+  box-shadow: 0 0 8px var(--accent-red);
+}
+
+@keyframes led-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Button UI */
+.btn-tactical {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 10px 20px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  text-transform: uppercase;
+}
+
+.btn-tactical:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.25);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.05);
+}
+
+.btn-tactical-active {
+  background: rgba(0, 242, 254, 0.08);
+  border: 1px solid var(--accent-cyan);
+  color: var(--accent-cyan);
+  box-shadow: 0 0 10px rgba(0, 242, 254, 0.1);
+}
+
+.btn-tactical-active:hover {
+  background: rgba(0, 242, 254, 0.12);
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 15px rgba(0, 242, 254, 0.2);
+}
+
+/* Tech Left Strip styling */
+.neon-strip-green {
+  position: relative;
+}
+.neon-strip-green::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 4px;
+  background-color: var(--accent-green);
+  box-shadow: 0 0 8px var(--accent-green);
+  border-top-left-radius: 12px;
+  border-bottom-left-radius: 12px;
+}
+
+.neon-strip-orange {
+  position: relative;
+}
+.neon-strip-orange::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 4px;
+  background-color: var(--accent-orange);
+  box-shadow: 0 0 8px var(--accent-orange);
+  border-top-left-radius: 12px;
+  border-bottom-left-radius: 12px;
+}
