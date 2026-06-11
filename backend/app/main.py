@@ -6,6 +6,24 @@ import zipfile
 import io
 import shutil
 import random
+
+# Load .env file manually if it exists
+for env_path in [
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),  # backend/.env
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"),  # root/.env
+]:
+    if os.path.exists(env_path):
+        try:
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, val = line.split("=", 1)
+                        os.environ[key.strip()] = val.strip().strip("'").strip('"')
+            print(f"Loaded environment variables from: {env_path}")
+        except Exception as e:
+            print(f"Failed to load env file {env_path}: {e}")
+
 from fastapi import FastAPI, HTTPException, Body, File, UploadFile, Form
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -629,6 +647,12 @@ def get_experiment_training_job(exp_id: str):
     job = db.get_training_job_by_experiment(exp_id)
     if not job:
         raise HTTPException(status_code=404, detail="Training job not found for this experiment")
+    
+    # Fetch and attach experiment details
+    exp = db.get_experiment(exp_id)
+    if exp:
+        job["experiment"] = exp
+        
     return job
 
 @app.get("/api/experiments/{exp_id}/evaluation")

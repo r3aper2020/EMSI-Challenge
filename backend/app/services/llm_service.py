@@ -126,8 +126,9 @@ class LLMService:
         if self.api_key:
             try:
                 action_data = self._call_gemini_api(prompt)
-                if action_data:
+                if action_data and action_data.get("message") != "LLM loop timeout.":
                     return self._process_structured_action(action_data, prompt)
+                print("Gemini loop timed out, falling back to rule-based parser.")
             except Exception as e:
                 print(f"Gemini API call failed, falling back to rule-based parser: {e}")
                 traceback.print_exc()
@@ -137,7 +138,7 @@ class LLMService:
         return self._process_structured_action(action_data, prompt)
 
     def _call_gemini_api(self, prompt: str) -> dict:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={self.api_key}"
         headers = {"Content-Type": "application/json"}
         
         system_instruction = (
@@ -155,6 +156,10 @@ class LLMService:
             }
         ]
         
+        # Keep track of training/curation results to return to frontend action handler
+        action_type = "chat"
+        action_payload = {}
+        
         # We will loop to handle function calls (recursively up to 5 times)
         for loop_idx in range(5):
             payload = {
@@ -170,6 +175,7 @@ class LLMService:
             candidate = res_json["candidates"][0]
             content = candidate.get("content", {})
             parts = content.get("parts", [])
+            print(f"Gemini response candidate: {candidate}")
             
             # Append model's response to history
             contents.append(content)
@@ -178,16 +184,13 @@ class LLMService:
             has_fc = False
             tool_responses_parts = []
             
-            # Keep track of training/curation results to return to frontend action handler
-            action_type = "chat"
-            action_payload = {}
-            
             for part in parts:
                 if "functionCall" in part:
                     has_fc = True
                     fc = part["functionCall"]
                     name = fc["name"]
                     args = fc.get("args", {})
+                    print(f"Gemini requested tool execution: '{name}' with args {args}")
                     
                     # Execute tool locally
                     try:
@@ -197,14 +200,16 @@ class LLMService:
                         if name == "list_datasets":
                             result = self.db.get_datasets()
                         elif name == "curate_dataset_split":
-                            dataset_id = args.get("dataset_id")
-                            version_tag = args.get("version_tag")
+                            dataset_id = args.get("dataset_id") or "dataset_rareplanes_real"
+                            version_tag = args.get("version_tag") or "v1"
                             train_split = args.get("train_split", 0.8)
                             val_split = args.get("val_split", 0.2)
                             split_seed = args.get("split_seed", 42)
                             
                             # Let the backend handler do it on action return
                             action_type = "create_experiment"
+                            import time
+                            version_id = f"version_{dataset_id}_{int(time.time())}"
                             action_payload = {
                                 "dataset_id": dataset_id,
                                 "version_tag": version_tag,
@@ -215,7 +220,11 @@ class LLMService:
                                 "model_type": "yolo_seg",
                                 "config": {"epochs": 3}
                             }
-                            result = {"status": "intent_captured", "message": "Creating dataset version split..."}
+                            result = {
+                                "status": "intent_captured",
+                                "dataset_version_id": version_id,
+                                "message": f"Successfully curated split. Dataset version created: {version_id}"
+                            }
                         elif name == "list_experiments":
                             result = self.db.get_experiments()
                         elif name == "start_training":
@@ -290,6 +299,12 @@ class LLMService:
                 "parts": tool_responses_parts
             })
             
+        if action_type != "chat":
+            return {
+                "action": action_type,
+                **action_payload,
+                "custom_message": "Action parsed successfully, but chat response generation timed out."
+            }
         return {"action": "chat", "message": "LLM loop timeout."}
 
     def _fallback_parse(self, prompt: str) -> dict:
@@ -354,52 +369,72 @@ class LLMService:
                 }
             }
             
-        # 4. Standard train/split triggering
-        dataset_id = "dataset_rareplanes_real"
-        train_split = 0.8
-        val_split = 0.2
-        split_match = re.search(r"(\d+)/(\d+)", prompt)
-        if split_match:
-            try:
-                t = int(split_match.group(1))
-                v = int(split_match.group(2))
-                total = t + v
-                train_split = t / total
-                val_split = v / total
-            except:
-                pass
+        # 4. Check if the user is explicitly asking to start a training / split / run workflow
+        train_keywords = ["train", "split", "run", "fit", "start", "segment", "detect", "build", "compile", "export", "create"]
+        is_training_request = any(kw in p_lower for kw in train_keywords)
+        
+        if is_training_request:
+            # Standard train/split triggering
+            dataset_id = "dataset_rareplanes_real"
+            train_split = 0.8
+            val_split = 0.2
+            split_match = re.search(r"(\d+)/(\d+)", prompt)
+            if split_match:
+                try:
+                    t = int(split_match.group(1))
+                    v = int(split_match.group(2))
+                    total = t + v
+                    train_split = t / total
+                    val_split = v / total
+                except:
+                    pass
+                    
+            task_type = "instance_segmentation"
+            model_type = "yolo_seg"
+            if "detection" in p_lower or "object detection" in p_lower:
+                task_type = "object_detection"
+                model_type = "yolo_detect"
                 
-        task_type = "instance_segmentation"
-        model_type = "yolo_seg"
-        if "detection" in p_lower or "object detection" in p_lower:
-            task_type = "object_detection"
-            model_type = "yolo_detect"
-            
-        version_tag = "v1"
-        if "v2" in p_lower:
-            version_tag = "v2"
-        elif "v3" in p_lower:
-            version_tag = "v3"
-            
-        return {
-            "action": "create_experiment",
-            "dataset_id": dataset_id,
-            "version_tag": version_tag,
-            "train_split": train_split,
-            "val_split": val_split,
-            "split_seed": 42,
-            "task_type": task_type,
-            "model_type": model_type,
-            "config": {
-                "epochs": 3,
-                "batch": 2,
-                "imgsz": 512,
-                "augmentations": {
-                    "fliplr": False,
-                    "flipud": False,
-                    "degrees": 0.0
+            version_tag = "v1"
+            if "v2" in p_lower:
+                version_tag = "v2"
+            elif "v3" in p_lower:
+                version_tag = "v3"
+                
+            return {
+                "action": "create_experiment",
+                "dataset_id": dataset_id,
+                "version_tag": version_tag,
+                "train_split": train_split,
+                "val_split": val_split,
+                "split_seed": 42,
+                "task_type": task_type,
+                "model_type": model_type,
+                "config": {
+                    "epochs": 3,
+                    "batch": 2,
+                    "imgsz": 512,
+                    "augmentations": {
+                        "fliplr": False,
+                        "flipud": False,
+                        "degrees": 0.0
+                    }
                 }
             }
+            
+        # 5. Default Chat / Conversational response listing helper info (if no workflow keyword matches)
+        help_text = (
+            "Hello! I am your ATR AI Assistant. If you have not configured a Gemini API Key, I can help you orchestrate workflows using these structured fallback commands:\n\n"
+            "• **List Datasets**: 'Show my datasets' or 'how many datasets do we have?'\n"
+            "• **View Accuracy**: 'Which model is the best?' or 'show leaderboard'\n"
+            "• **Train Model**: 'Train YOLOv8 on dataset with an 80/20 split' or 'split dataset 70/30'\n"
+            "• **Clone Experiment**: 'Redo previous experiment with horizontal flip and rotation'\n\n"
+            "Please refine your prompt with one of these commands, or configure your Gemini API Key in the backend env."
+        )
+        return {
+            "action": "chat",
+            "message": help_text,
+            "payload": {}
         }
 
     def _process_structured_action(self, action_data: dict, original_prompt: str) -> dict:

@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import FiftyOneDashboard from './FiftyOneDashboard';
+import ProjectDashboardView from './ProjectDashboardView';
 import { 
   Play, 
   RefreshCw, 
@@ -13,7 +15,8 @@ import {
   EyeOff,
   Trash2,
   Save,
-  Cpu
+  Cpu,
+  Activity
 } from 'lucide-react';
 
 const API_BASE = 'http://127.0.0.1:8000/api';
@@ -78,7 +81,11 @@ const renderSVGChart = (history: number[], strokeColor: string) => {
 };
 
 export default function App() {
-  const [wizardStep, setWizardStep] = useState<'curate' | 'annotate' | 'train' | 'evaluate'>('curate');
+  if (window.location.pathname.startsWith('/fiftyone')) {
+    return <FiftyOneDashboard />;
+  }
+
+  const [wizardStep, setWizardStep] = useState<'dashboard' | 'curate' | 'annotate' | 'train' | 'evaluate'>('dashboard');
   const [llmOpen, setLlmOpen] = useState(true);
   const [llmPrompt, setLlmPrompt] = useState('');
   const [llmLogs, setLlmLogs] = useState<Array<{ sender: 'user' | 'system'; text: string; time: string; payload?: any }>>([
@@ -107,6 +114,7 @@ export default function App() {
 
   const [compiledVersion, setCompiledVersion] = useState<any>(null);
   const [isGeneratingBlueprint, setIsGeneratingBlueprint] = useState<boolean>(false);
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
 
   // Pipeline Parameters Form State (Combined & Lifted)
   const [formData, setFormData] = useState({
@@ -290,7 +298,8 @@ export default function App() {
         loss_history: exp.loss_history || [],
         map50_history: exp.map50_history || [],
         current_epoch: exp.current_epoch || 0,
-        total_epochs: exp.config?.epochs || 3
+        total_epochs: exp.config?.epochs || 3,
+        experiment: exp
       });
       setJobLogs(exp.logs || '');
       setWizardStep('train');
@@ -411,7 +420,26 @@ export default function App() {
       map50_history: [],
       current_epoch: 0,
       total_epochs: formData.epochs,
-      logs: ""
+      logs: "",
+      experiment: {
+        id: "exp_preparing",
+        name: formData.name,
+        task_type: formData.task_type,
+        model_type: formData.model_type,
+        dataset_version_id: versionId,
+        config: {
+          epochs: formData.epochs,
+          batch: formData.batch,
+          imgsz: formData.imgsz,
+          train_split: formData.train_split,
+          val_split: 1 - formData.train_split,
+          augmentations: {
+            fliplr: formData.fliplr,
+            flipud: formData.flipud,
+            degrees: formData.degrees
+          }
+        }
+      }
     });
     setJobLogs(prev => prev + `[System] Launching Pipeline Execution on Accelerator...
 [System] Stage 2: Applying Augmentations (fliplr=${formData.fliplr ? 'ON' : 'OFF'}, flipud=${formData.flipud ? 'ON' : 'OFF'}, degrees=${formData.degrees})...
@@ -570,6 +598,7 @@ export default function App() {
         {/* Guided Progress Stepper */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {[
+            { id: 'dashboard', label: '0. MISSION CONTROL', icon: Activity },
             { id: 'curate', label: '1. CURATE', icon: Compass },
             { id: 'annotate', label: '2. ANNOTATE', icon: Layers },
             { id: 'train', label: '3. TRAIN', icon: Play },
@@ -577,7 +606,7 @@ export default function App() {
           ].map((step, idx) => {
             const Icon = step.icon;
             const active = wizardStep === step.id;
-            const isCompleted = ['curate', 'annotate', 'train', 'evaluate'].indexOf(wizardStep) > idx;
+            const isCompleted = ['dashboard', 'curate', 'annotate', 'train', 'evaluate'].indexOf(wizardStep) > idx;
             return (
               <React.Fragment key={step.id}>
                 {idx > 0 && (
@@ -713,8 +742,25 @@ export default function App() {
 
         {/* Active Screen Container */}
         <main className="glass-panel" style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', padding: '20px' }}>
+          {wizardStep === 'dashboard' && (
+            <ProjectDashboardView 
+              datasets={datasets}
+              experiments={experiments}
+              activeJob={activeJob}
+              llmLogs={llmLogs}
+              setWizardStep={setWizardStep}
+              setActiveDatasetId={setActiveDatasetId}
+              fetchDatasetEmbeddings={fetchDatasetEmbeddings}
+              fetchDatasetVersions={fetchDatasetVersions}
+              setUploadModalOpen={setUploadModalOpen}
+              setCompareBaseId={setCompareBaseId}
+              setCompareCandId={setCompareCandId}
+            />
+          )}
           {wizardStep === 'curate' && (
             <PipelineStudioView 
+              uploadModalOpen={uploadModalOpen}
+              setUploadModalOpen={setUploadModalOpen}
               wizardStep={wizardStep}
               setWizardStep={setWizardStep}
               datasets={datasets} 
@@ -877,6 +923,107 @@ export default function App() {
                     </div>
                   </div>
                   
+                  {/* Telemetry card for experiment details */}
+                  {activeJob.experiment && (
+                    <div className="glass-panel" style={{ 
+                      padding: '14px 20px', 
+                      background: 'rgba(255, 255, 255, 0.02)', 
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      borderRadius: '8px',
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                      gap: '20px',
+                      fontSize: '0.75rem',
+                      lineHeight: '1.4'
+                    }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }}>RUN NAME & SCHEMATIC</span>
+                        <span style={{ fontWeight: 600, color: 'var(--accent-cyan)' }}>{activeJob.experiment.name || 'Experiment'}</span>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>ID: {activeJob.experiment.id}</span>
+                      </div>
+                      
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }}>MODEL ARCHITECTURE</span>
+                        <span style={{ fontWeight: 600, color: '#fff' }}>{(activeJob.experiment.model_type || 'yolo_seg').toUpperCase().replace('_', ' ')}</span>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{(activeJob.experiment.task_type || 'instance_segmentation').replace('_', ' ')}</span>
+                      </div>
+                      
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }}>DATASET SOURCE VERSION</span>
+                        <span style={{ fontWeight: 600, color: '#fff', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }} title={activeJob.experiment.dataset_version_id}>
+                          {(activeJob.experiment.dataset_version_id || '').replace('version_dataset_', '')}
+                        </span>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                          Split: {(() => {
+                            const trainPercent = Math.round((activeJob.experiment.config?.train_split ?? activeJob.experiment.config?.train_ratio ?? 0.7) * 100);
+                            const valPercent = Math.round((activeJob.experiment.config?.val_split ?? activeJob.experiment.config?.val_ratio ?? 0.3) * 100);
+                            return `${trainPercent}/${valPercent}`;
+                          })()}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }}>HYPERPARAMETERS</span>
+                        <span style={{ fontWeight: 600, color: '#fff' }}>
+                          Epochs: {activeJob.experiment.config?.epochs ?? activeJob.total_epochs ?? 3} // Batch: {activeJob.experiment.config?.batch ?? activeJob.experiment.config?.batch_size ?? 2}
+                        </span>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                          Resolution: {activeJob.experiment.config?.imgsz ?? 512}px
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }}>ACTIVE AUGMENTATIONS</span>
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '2px' }}>
+                          {(() => {
+                            const config = activeJob.experiment.config || {};
+                            const augs = config.augmentations || {};
+                            const hasFliplr = augs.fliplr ?? config.fliplr ?? false;
+                            const hasFlipud = augs.flipud ?? config.flipud ?? false;
+                            const degrees = augs.degrees ?? config.degrees ?? 0;
+                            return (
+                              <>
+                                <span style={{ 
+                                  fontSize: '0.55rem', 
+                                  fontFamily: 'var(--font-mono)',
+                                  padding: '2px 6px',
+                                  background: hasFliplr ? 'rgba(0, 255, 135, 0.1)' : 'rgba(255,255,255,0.03)',
+                                  border: hasFliplr ? '1px solid rgba(0, 255, 135, 0.2)' : '1px solid rgba(255,255,255,0.05)',
+                                  borderRadius: '3px',
+                                  color: hasFliplr ? 'var(--accent-green)' : 'var(--text-muted)'
+                                }}>
+                                  H-FLIP
+                                </span>
+                                <span style={{ 
+                                  fontSize: '0.55rem', 
+                                  fontFamily: 'var(--font-mono)',
+                                  padding: '2px 6px',
+                                  background: hasFlipud ? 'rgba(0, 255, 135, 0.1)' : 'rgba(255,255,255,0.03)',
+                                  border: hasFlipud ? '1px solid rgba(0, 255, 135, 0.2)' : '1px solid rgba(255,255,255,0.05)',
+                                  borderRadius: '3px',
+                                  color: hasFlipud ? 'var(--accent-green)' : 'var(--text-muted)'
+                                }}>
+                                  V-FLIP
+                                </span>
+                                <span style={{ 
+                                  fontSize: '0.55rem', 
+                                  fontFamily: 'var(--font-mono)',
+                                  padding: '2px 6px',
+                                  background: degrees > 0 ? 'rgba(0, 255, 135, 0.1)' : 'rgba(255,255,255,0.03)',
+                                  border: degrees > 0 ? '1px solid rgba(0, 255, 135, 0.2)' : '1px solid rgba(255,255,255,0.05)',
+                                  borderRadius: '3px',
+                                  color: degrees > 0 ? 'var(--accent-green)' : 'var(--text-muted)'
+                                }}>
+                                  ROT: {degrees}°
+                                </span>
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                       <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>ACCELERATOR LOSS DIVERGENCE HISTORY</span>
@@ -913,6 +1060,8 @@ export default function App() {
                 </div>
               ) : (
                 <PipelineStudioView 
+                  uploadModalOpen={uploadModalOpen}
+                  setUploadModalOpen={setUploadModalOpen}
                   wizardStep={wizardStep}
                   setWizardStep={setWizardStep}
                   datasets={datasets} 
@@ -1112,6 +1261,8 @@ const CLASS_NAMES: Record<number, string> = {
 // VIEW COMPONENT: 1. PIPELINE STUDIO (Curation & Build)
 // ============================================
 function PipelineStudioView({
+  uploadModalOpen,
+  setUploadModalOpen,
   datasets,
   embeddings,
   selectedEmbed,
@@ -1136,7 +1287,6 @@ function PipelineStudioView({
   compiledBlueprint,
   setCompiledBlueprint
 }: any) {
-  const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadName, setUploadName] = useState('');
   const [uploadDesc, setUploadDesc] = useState('');
   const [uploadTask, setUploadTask] = useState('instance_segmentation');
@@ -1329,6 +1479,15 @@ function PipelineStudioView({
           >
             <Plus style={{ width: '14px', height: '14px' }} />
             IMPORT DATASET
+          </button>
+
+          <button 
+            onClick={() => window.open(`/fiftyone?dataset_id=${activeDatasetId}`, '_blank')}
+            className="btn-tactical border-glow-cyan"
+            style={{ padding: '8px 14px', marginTop: '16px' }}
+          >
+            <Compass style={{ width: '14px', height: '14px' }} />
+            LAUNCH FIFTYONE WORKBENCH
           </button>
         </div>
       </div>
@@ -1632,6 +1791,63 @@ function PipelineStudioView({
                         <div style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>BOUNDS FOOTPRINT (E / N)</div>
                         <div>Min: E {selectedEmbed.metadata?.bounds?.min_easting?.toFixed(1) || 296000}m / N {selectedEmbed.metadata?.bounds?.min_northing?.toFixed(1) || 4312000}m</div>
                         <div>Max: E {selectedEmbed.metadata?.bounds?.max_easting?.toFixed(1) || 296256}m / N {selectedEmbed.metadata?.bounds?.max_northing?.toFixed(1) || 4312256}m</div>
+                      </div>
+
+                      {/* Embeddings PCA Similarity search section */}
+                      <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                          EMBEDDING VECTOR SIMILARITY ANALYSIS
+                        </span>
+                        
+                        {/* Outlier score display */}
+                        <div style={{ background: 'rgba(255, 153, 0, 0.04)', border: '1px solid rgba(255, 153, 0, 0.15)', padding: '8px', borderRadius: '4px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--accent-orange)' }}>
+                          ANOMALY OUTLIER SCORE: {(() => {
+                            const xs = embeddings.map((e: any) => e.x);
+                            const ys = embeddings.map((e: any) => e.y);
+                            const cx = xs.reduce((a: number, b: number) => a + b, 0) / (embeddings.length || 1);
+                            const cy = ys.reduce((a: number, b: number) => a + b, 0) / (embeddings.length || 1);
+                            const dx = selectedEmbed.x - cx;
+                            const dy = selectedEmbed.y - cy;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            const maxDist = Math.max(...embeddings.map((e: any) => Math.sqrt((e.x - cx) ** 2 + (e.y - cy) ** 2))) || 1;
+                            return ((dist / maxDist) * 100).toFixed(1);
+                          })()}%
+                        </div>
+
+                        {/* Similarity neighbors grid */}
+                        <span style={{ fontSize: '0.55rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+                          NEAREST VECTORS IN EMBEDDINGS (EUCLIDEAN PCA MATCHES):
+                        </span>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
+                          {embeddings
+                            .filter((emb: any) => emb.image_id !== selectedEmbed.image_id)
+                            .map((emb: any) => {
+                              const dx = emb.x - selectedEmbed.x;
+                              const dy = emb.y - selectedEmbed.y;
+                              const dist = Math.sqrt(dx * dx + dy * dy);
+                              return { emb, dist };
+                            })
+                            .sort((a: any, b: any) => a.dist - b.dist)
+                            .slice(0, 4)
+                            .map((neigh: any) => (
+                              <div 
+                                key={neigh.emb.image_id}
+                                onClick={() => {
+                                  setSelectedEmbed(neigh.emb);
+                                }}
+                                style={{ cursor: 'pointer', textAlign: 'center' }}
+                              >
+                                <img 
+                                  src={getImageUrl(activeDatasetId, neigh.emb.image_id)} 
+                                  style={{ width: '100%', height: '35px', objectFit: 'cover', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.05)' }} 
+                                />
+                                <div style={{ fontSize: '0.5rem', color: 'var(--accent-cyan)', marginTop: '2px', fontFamily: 'var(--font-mono)' }}>
+                                  d={neigh.dist.toFixed(2)}
+                                </div>
+                              </div>
+                            ))
+                          }
+                        </div>
                       </div>
                     </div>
                   ) : (
@@ -2905,9 +3121,18 @@ function ModelEvaluatorView({
           {/* Bottom Side: Predictions Inspection */}
           <div className="glass-recessed" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', overflow: 'auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', letterSpacing: '0.05em' }}>
-                VISUAL VALIDATION CHIP OVERLAYS (CANDIDATE RUN)
-              </h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', letterSpacing: '0.05em', margin: 0 }}>
+                  VISUAL VALIDATION CHIP OVERLAYS (CANDIDATE RUN)
+                </h3>
+                <button
+                  onClick={() => window.open(`/fiftyone?dataset_id=${getDatasetIdFromVersion(compareResults.candidate.exp.dataset_version_id)}&experiment_id=${compareCandId}`, '_blank')}
+                  className="btn-tactical border-glow-cyan"
+                  style={{ padding: '4px 10px', fontSize: '0.65rem' }}
+                >
+                  <Compass style={{ width: '12px', height: '12px' }} /> Launch FiftyOne Model Inspector
+                </button>
+              </div>
               <div style={{ display: 'flex', gap: '16px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)' }}>
                 <span style={{ color: 'var(--accent-green)' }}>● TP = TRUE POSITIVE</span>
                 <span style={{ color: 'var(--accent-red)' }}>● FP = FALSE POSITIVE</span>
