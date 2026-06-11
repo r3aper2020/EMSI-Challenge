@@ -25,6 +25,7 @@
   --tech-border-cyan: 1px solid rgba(0, 242, 254, 0.3);
   --tech-border-green: 1px solid rgba(0, 255, 135, 0.3);
   --tech-border-orange: 1px solid rgba(255, 153, 0, 0.3);
+  --tech-border-red: 1px solid rgba(255, 0, 85, 0.3);
 }
 
 * {
@@ -173,6 +174,10 @@ body {
 .border-glow-orange {
   border: var(--tech-border-orange);
   box-shadow: 0 0 15px rgba(255, 153, 0, 0.12), inset 0 0 10px rgba(255, 153, 0, 0.05);
+}
+.border-glow-red {
+  border: var(--tech-border-red);
+  box-shadow: 0 0 15px rgba(255, 0, 85, 0.12), inset 0 0 10px rgba(255, 0, 85, 0.05);
 }
 
 /* High-tech Gradient Text */

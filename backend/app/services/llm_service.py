@@ -200,7 +200,9 @@ class LLMService:
                         if name == "list_datasets":
                             result = self.db.get_datasets()
                         elif name == "curate_dataset_split":
-                            dataset_id = args.get("dataset_id") or "dataset_rareplanes_real"
+                            datasets = self.db.get_datasets()
+                            default_ds = datasets[0]["id"] if datasets else "dataset_rareplanes_real"
+                            dataset_id = args.get("dataset_id") or default_ds
                             version_tag = args.get("version_tag") or "v1"
                             train_split = args.get("train_split", 0.8)
                             val_split = args.get("val_split", 0.2)
@@ -375,7 +377,14 @@ class LLMService:
         
         if is_training_request:
             # Standard train/split triggering
-            dataset_id = "dataset_rareplanes_real"
+            datasets = self.db.get_datasets()
+            if not datasets:
+                return {
+                    "action": "chat",
+                    "message": "No registered datasets found in the database. Please import or register a dataset first before starting a training run.",
+                    "payload": {}
+                }
+            dataset_id = datasets[0]["id"]
             train_split = 0.8
             val_split = 0.2
             split_match = re.search(r"(\d+)/(\d+)", prompt)
@@ -388,6 +397,46 @@ class LLMService:
                     val_split = v / total
                 except:
                     pass
+
+            # Parse epochs
+            epochs = 3
+            epoch_match = re.search(r"(\d+)\s*epochs?", p_lower) or re.search(r"epochs?\s*[:=]?\s*(\d+)", p_lower)
+            if epoch_match:
+                try:
+                    epochs = int(epoch_match.group(1))
+                except:
+                    pass
+
+            # Parse batch size
+            batch = 2
+            batch_match = re.search(r"batch\s*(?:size)?\s*[:=]?\s*(\d+)", p_lower) or re.search(r"(\d+)\s*batch", p_lower)
+            if batch_match:
+                try:
+                    batch = int(batch_match.group(1))
+                except:
+                    pass
+
+            # Parse image size (imgsz)
+            imgsz = 512
+            imgsz_match = re.search(r"imgsz\s*[:=]?\s*(\d+)", p_lower) or re.search(r"image\s*size\s*[:=]?\s*(\d+)", p_lower) or re.search(r"(\d+)\s*imgsz", p_lower)
+            if imgsz_match:
+                try:
+                    imgsz = int(imgsz_match.group(1))
+                except:
+                    pass
+
+            # Parse augmentations
+            fliplr = "horizontal flip" in p_lower or "horizontal-flip" in p_lower or "fliplr" in p_lower
+            flipud = "vertical flip" in p_lower or "vertical-flip" in p_lower or "flipud" in p_lower
+            degrees = 0.0
+            rot_match = re.search(r"(?:rotation|rotate|deg)\s*(\d+)", p_lower)
+            if rot_match:
+                try:
+                    degrees = float(rot_match.group(1))
+                except:
+                    pass
+            elif "rotation" in p_lower or "rotate" in p_lower:
+                degrees = 15.0
                     
             task_type = "instance_segmentation"
             model_type = "yolo_seg"
@@ -411,13 +460,13 @@ class LLMService:
                 "task_type": task_type,
                 "model_type": model_type,
                 "config": {
-                    "epochs": 3,
-                    "batch": 2,
-                    "imgsz": 512,
+                    "epochs": epochs,
+                    "batch": batch,
+                    "imgsz": imgsz,
                     "augmentations": {
-                        "fliplr": False,
-                        "flipud": False,
-                        "degrees": 0.0
+                        "fliplr": fliplr,
+                        "flipud": flipud,
+                        "degrees": degrees
                     }
                 }
             }
@@ -450,7 +499,9 @@ class LLMService:
             }
             
         if action == "create_experiment":
-            dataset_id = action_data.get("dataset_id", "dataset_rareplanes_real")
+            datasets = self.db.get_datasets()
+            default_ds = datasets[0]["id"] if datasets else "dataset_rareplanes_real"
+            dataset_id = action_data.get("dataset_id", default_ds)
             version_tag = action_data.get("version_tag", f"v_{str(int(time.time()))[-4:]}")
             train_split = action_data.get("train_split", 0.8)
             val_split = action_data.get("val_split", 0.2)

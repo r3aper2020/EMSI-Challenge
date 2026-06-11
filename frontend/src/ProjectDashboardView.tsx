@@ -8,7 +8,8 @@ import {
   Info, 
   Terminal,
   ArrowRight,
-  RefreshCw
+  RefreshCw,
+  Trash2
 } from 'lucide-react';
 
 interface ProjectDashboardProps {
@@ -23,6 +24,7 @@ interface ProjectDashboardProps {
   setUploadModalOpen: (open: boolean) => void;
   setCompareBaseId: (id: string) => void;
   setCompareCandId: (id: string) => void;
+  setDatasetToDelete: (ds: any) => void;
 }
 
 export default function ProjectDashboardView({
@@ -36,7 +38,8 @@ export default function ProjectDashboardView({
   fetchDatasetVersions,
   setUploadModalOpen,
   setCompareBaseId,
-  setCompareCandId
+  setCompareCandId,
+  setDatasetToDelete
 }: ProjectDashboardProps) {
 
   // Get best performing model
@@ -195,9 +198,34 @@ export default function ProjectDashboardView({
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontWeight: 600, fontSize: '0.8rem', color: 'var(--accent-cyan)' }}>{ds.name}</span>
-                    <span style={{ fontSize: '0.6rem', fontFamily: 'var(--font-mono)', background: 'rgba(0,0,0,0.4)', padding: '2px 6px', borderRadius: '4px', color: 'var(--text-secondary)' }}>
-                      ID: {ds.id}
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '0.6rem', fontFamily: 'var(--font-mono)', background: 'rgba(0,0,0,0.4)', padding: '2px 6px', borderRadius: '4px', color: 'var(--text-secondary)' }}>
+                        ID: {ds.id}
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDatasetToDelete(ds);
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--accent-red)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          padding: '4px',
+                          borderRadius: '4px',
+                          transition: 'all 0.15s ease'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(255, 0, 85, 0.1)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                        title="Delete dataset"
+                      >
+                        <Trash2 style={{ width: '13px', height: '13px' }} />
+                      </button>
+                    </div>
                   </div>
                   <p style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', margin: 0 }}>{ds.description || 'Geospatial airfield satellite chip dataset.'}</p>
                   
@@ -381,7 +409,6 @@ export default function ProjectDashboardView({
           </div>
 
         </div>
-
       </div>
 
     </div>

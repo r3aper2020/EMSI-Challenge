@@ -67,23 +67,37 @@ class TrainingWorker(threading.Thread):
             degrees = augmentations.get("degrees", 0.0)
             
             # Determine whether to use mock or real training.
-            # Default to real YOLO training if ultralytics is installed, but check toggle in config or fallback.
             mock_mode = config.get("mock", False)
             
             # Setup run directory
             exp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "storage", "experiments", exp_id)
             os.makedirs(exp_dir, exist_ok=True)
             
+            # Check for cancellation before starting
+            job = self.db.get_training_job(job_id)
+            if job and job["status"] == "cancelled":
+                print(f"Training job {job_id} cancelled before start.")
+                self.db.update_training_job(job_id, status="cancelled", logs="[System] Training cancelled by user.")
+                self.db.update_experiment_status(exp_id, status="cancelled")
+                return
+                
             if mock_mode:
                 self._run_mock_training(job_id, exp_id, version, epochs, fliplr, degrees)
             else:
                 self._run_real_training(job_id, exp_id, version, epochs, batch, imgsz, fliplr, degrees, exp_dir)
                 
         except Exception as e:
-            err_msg = f"Training failed with error: {str(e)}\n{traceback.format_exc()}"
-            print(err_msg)
-            self.db.update_training_job(job_id, status="failed", logs=f"[Error] {err_msg}")
-            self.db.update_experiment_status(exp_id, status="failed")
+            # Check if job was cancelled
+            job = self.db.get_training_job(job_id)
+            if job and job["status"] == "cancelled":
+                print(f"Training job {job_id} cancelled.")
+                self.db.update_training_job(job_id, status="cancelled", logs="[System] Training cancelled by user.")
+                self.db.update_experiment_status(exp_id, status="cancelled")
+            else:
+                err_msg = f"Training failed with error: {str(e)}\n{traceback.format_exc()}"
+                print(err_msg)
+                self.db.update_training_job(job_id, status="failed", logs=f"[Error] {err_msg}")
+                self.db.update_experiment_status(exp_id, status="failed")
 
     def _run_mock_training(self, job_id, exp_id, version, epochs, fliplr, degrees):
         print(f"Running MOCK training for experiment {exp_id}...")
@@ -95,6 +109,14 @@ class TrainingWorker(threading.Thread):
         
         # Simulated metrics over epochs
         for epoch in range(1, epochs + 1):
+            # Check for cancellation
+            job = self.db.get_training_job(job_id)
+            if job and job["status"] == "cancelled":
+                print(f"Mock training job {job_id} cancelled during training.")
+                self.db.update_training_job(job_id, status="cancelled", logs="[System] Training cancelled by user.")
+                self.db.update_experiment_status(exp_id, status="cancelled")
+                return
+                
             time.sleep(3) # Simulated training time
             
             # Simulated losses decreasing
@@ -223,6 +245,11 @@ class TrainingWorker(threading.Thread):
         
         # Custom Ultralytics callbacks to capture metrics and update DB in real-time
         def on_fit_epoch_end(trainer):
+            # Check if job status has been set to "cancelled"
+            job = self.db.get_training_job(job_id)
+            if job and job["status"] == "cancelled":
+                raise StopIteration("Training job was cancelled by user.")
+                
             # trainer.metrics contains results
             epoch = trainer.epoch + 1
             metrics_dict = trainer.metrics

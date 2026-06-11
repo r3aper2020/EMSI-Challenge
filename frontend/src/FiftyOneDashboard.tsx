@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { 
   Search, 
   Check, 
@@ -58,6 +58,98 @@ export default function FiftyOneDashboard() {
   const [showTP, setShowTP] = useState(true);
   const [showFP, setShowFP] = useState(true);
   const [showFN, setShowFN] = useState(true);
+
+  // Lasso Curation Filtering & Coordinate Mapping State
+  const [lassoPolygon, setLassoPolygon] = useState<{ x: number; y: number }[]>([]);
+  const [isLassoing, setIsLassoing] = useState(false);
+  const [lassoedIds, setLassoedIds] = useState<string[]>([]);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  // Point-in-polygon ray casting check
+  const isPointInPolygon = (point: { x: number; y: number }, polygon: { x: number; y: number }[]) => {
+    const x = point.x, y = point.y;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].x, yi = polygon[i].y;
+      const xj = polygon[j].x, yj = polygon[j].y;
+      
+      const intersect = ((yi > y) !== (yj > y))
+        && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  };
+
+  const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!svgRef.current) return;
+    e.preventDefault(); // Stop default browser selection/drag behavior
+    const rect = svgRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 420;
+    const y = ((e.clientY - rect.top) / rect.height) * 420;
+    setIsLassoing(true);
+    setLassoPolygon([{ x, y }]);
+  };
+
+  const clearLasso = () => {
+    setLassoPolygon([]);
+    setLassoedIds([]);
+  };
+
+  // Reset lasso state on active dataset change
+  useEffect(() => {
+    setLassoPolygon([]);
+    setIsLassoing(false);
+    setLassoedIds([]);
+  }, [activeDatasetId]);
+
+  // Global mousemove and mouseup listeners when lassoing is active
+  useEffect(() => {
+    if (!isLassoing) return;
+
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+      if (!svgRef.current) return;
+      const rect = svgRef.current.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * 420;
+      const y = ((e.clientY - rect.top) / rect.height) * 420;
+      
+      const lastPoint = lassoPolygon[lassoPolygon.length - 1];
+      if (!lastPoint || Math.abs(lastPoint.x - x) > 1 || Math.abs(lastPoint.y - y) > 1) {
+        setLassoPolygon(prev => [...prev, { x, y }]);
+      }
+    };
+
+    const handleGlobalMouseUp = () => {
+      setIsLassoing(false);
+      
+      if (lassoPolygon.length > 2) {
+        const insideIds: string[] = [];
+        embeddings.forEach((pt: any) => {
+          const cx = ((pt.x + 10) / 20) * 380 + 20;
+          const cy = ((pt.y + 10) / 20) * 380 + 20;
+          if (isPointInPolygon({ x: cx, y: cy }, lassoPolygon)) {
+            insideIds.push(pt.image_id);
+          }
+        });
+        
+        if (insideIds.length > 0) {
+          setLassoedIds(insideIds);
+        } else {
+          setLassoedIds([]);
+          setLassoPolygon([]);
+        }
+      } else {
+        setLassoedIds([]);
+        setLassoPolygon([]);
+      }
+    };
+
+    window.addEventListener('mousemove', handleGlobalMouseMove);
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove);
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+    };
+  }, [isLassoing, lassoPolygon, embeddings]);
 
   // Analytic / View States
   const [prioritizeHard, setPrioritizeHard] = useState(false);
@@ -185,6 +277,12 @@ export default function FiftyOneDashboard() {
     if (sensorType === 'sar' && !sensor.includes('SAR')) {
       return false;
     }
+    
+    // Lasso Curation Filter
+    if (lassoedIds.length > 0 && !lassoedIds.includes(e.image_id)) {
+      return false;
+    }
+    
     return true;
   });
 
@@ -845,6 +943,8 @@ export default function FiftyOneDashboard() {
                           key={item.image_id}
                           onClick={() => {
                             setSelectedChip(item);
+                          }}
+                          onDoubleClick={() => {
                             setZoomedChip(item);
                           }}
                           style={{
@@ -1036,14 +1136,17 @@ export default function FiftyOneDashboard() {
                         position: 'relative',
                         display: 'flex',
                         alignItems: 'center',
-                        justifyContent: 'center'
+                        justifyContent: 'center',
+                        overflow: 'hidden'
                       }}
                     >
                       <svg
+                        ref={svgRef}
                         width="320"
                         height="320"
                         viewBox="0 0 420 420"
-                        style={{ maxWidth: '100%', maxHeight: '100%' }}
+                        onMouseDown={handleMouseDown}
+                        style={{ maxWidth: '100%', maxHeight: '100%', cursor: 'crosshair' }}
                       >
                         <line x1="210" y1="10" x2="210" y2="410" stroke="rgba(255,255,255,0.03)" />
                         <line x1="10" y1="210" x2="410" y2="210" stroke="rgba(255,255,255,0.03)" />
@@ -1051,6 +1154,7 @@ export default function FiftyOneDashboard() {
                           const cx = ((e.x + 10) / 20) * 380 + 20;
                           const cy = ((e.y + 10) / 20) * 380 + 20;
                           const isSelected = selectedChip && selectedChip.image_id === e.image_id;
+                          const isFilteredOut = !filteredEmbeddings.find((f: any) => f.image_id === e.image_id);
                           let color = 'rgba(0, 114, 255, 0.7)';
                           const sceneType = e.metadata?.scene_type;
                           if (sceneType === 'runway_intersection') color = '#00f2fe';
@@ -1065,18 +1169,69 @@ export default function FiftyOneDashboard() {
                               fill={isSelected ? '#fff' : color}
                               stroke={isSelected ? '#00f2fe' : 'none'}
                               strokeWidth={isSelected ? 2 : 0}
+                              opacity={isFilteredOut ? 0.15 : 1}
                               style={{
                                 cursor: 'pointer',
                                 transition: 'all 0.15s ease'
                               }}
-                              onClick={() => {
+                              onClick={(evt) => {
+                                evt.stopPropagation();
                                 setSelectedChip(e);
+                              }}
+                              onDoubleClick={(evt) => {
+                                evt.stopPropagation();
                                 setZoomedChip(e);
                               }}
                             />
                           );
                         })}
+                        {lassoPolygon.length > 0 && (
+                          <polyline
+                            points={lassoPolygon.map(p => `${p.x},${p.y}`).join(' ')}
+                            fill="rgba(0, 242, 254, 0.08)"
+                            stroke="#00f2fe"
+                            strokeWidth="3"
+                            strokeDasharray="5 3"
+                          />
+                        )}
                       </svg>
+
+                      {/* Legend Overlay */}
+                      <div style={{ position: 'absolute', bottom: '10px', left: '10px', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '0.55rem', fontFamily: "'Space Grotesk', monospace", background: 'rgba(0,0,0,0.75)', padding: '6px 10px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.08)', pointerEvents: 'none' }}>
+                        <span style={{ color: '#ff9900', display: 'flex', alignItems: 'center', gap: '4px' }}>● Cargo Ramps</span>
+                        <span style={{ color: '#00f2fe', display: 'flex', alignItems: 'center', gap: '4px' }}>● Runway Intersect.</span>
+                        <span style={{ color: '#00ff87', display: 'flex', alignItems: 'center', gap: '4px' }}>● Taxiways / Aprons</span>
+                        <span style={{ color: 'rgba(0, 114, 255, 0.8)', display: 'flex', alignItems: 'center', gap: '4px' }}>● Other Features</span>
+                      </div>
+
+                      {/* Clear Lasso button */}
+                      {lassoedIds.length > 0 && (
+                        <button
+                          onClick={clearLasso}
+                          style={{
+                            position: 'absolute',
+                            top: '10px',
+                            right: '10px',
+                            background: 'rgba(255, 0, 85, 0.2)',
+                            border: '1px solid #ff0055',
+                            color: '#ff0055',
+                            padding: '4px 8px',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '0.6rem',
+                            fontFamily: "'Space Grotesk', monospace",
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
+                        >
+                          <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                          </svg>
+                          CLEAR ({lassoedIds.length})
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -1112,7 +1267,8 @@ export default function FiftyOneDashboard() {
                             height: '340px',
                             borderRadius: '8px',
                             overflow: 'hidden',
-                            border: '1px solid rgba(255,255,255,0.1)'
+                            border: '1px solid rgba(255,255,255,0.1)',
+                            position: 'relative'
                           }}
                         >
                           <img
@@ -1123,6 +1279,29 @@ export default function FiftyOneDashboard() {
                               objectFit: 'cover'
                             }}
                           />
+                          <button
+                            onClick={() => setZoomedChip(selectedChip)}
+                            style={{
+                              position: 'absolute',
+                              bottom: '10px',
+                              right: '10px',
+                              background: 'rgba(9, 14, 31, 0.85)',
+                              border: '1px solid #00f2fe',
+                              color: '#00f2fe',
+                              padding: '6px 12px',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '0.65rem',
+                              fontWeight: 600,
+                              fontFamily: "'Space Grotesk', monospace",
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              transition: 'all 0.15s ease'
+                            }}
+                          >
+                            🔍 ZOOM CHIP
+                          </button>
                         </div>
                         <div
                           style={{
@@ -1203,6 +1382,8 @@ export default function FiftyOneDashboard() {
                                 key={e.emb.image_id}
                                 onClick={() => {
                                   setSelectedChip(e.emb);
+                                }}
+                                onDoubleClick={() => {
                                   setZoomedChip(e.emb);
                                 }}
                                 style={{ cursor: 'pointer', textAlign: 'center' }}

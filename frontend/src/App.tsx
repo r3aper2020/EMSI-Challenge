@@ -121,6 +121,9 @@ export default function App() {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadingStatus, setUploadingStatus] = useState('');
   const [uploadError, setUploadError] = useState('');
+  const [datasetToDelete, setDatasetToDelete] = useState<any>(null);
+  const [cancelJobConfirm, setCancelJobConfirm] = useState<any>(null);
+  const [experimentToDelete, setExperimentToDelete] = useState<any>(null);
 
   // Pipeline Parameters Form State (Combined & Lifted)
   const [formData, setFormData] = useState({
@@ -173,6 +176,27 @@ export default function App() {
     terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [llmLogs]);
 
+  useEffect(() => {
+    if (experiments && experiments.length > 0) {
+      const nextRunNum = experiments.length + 1;
+      setFormData(prev => {
+        const isDefaultName = prev.name === 'YOLOv8-seg airfield run' || prev.name.startsWith('YOLOv8-seg airfield run v') || prev.name.startsWith('YOLOv8-seg airfield run ');
+        const isDefaultTag = prev.version_tag === 'run_v1' || prev.version_tag.startsWith('run_v');
+        return {
+          ...prev,
+          name: isDefaultName ? `YOLOv8-seg airfield run v${nextRunNum}` : prev.name,
+          version_tag: isDefaultTag ? `run_v${nextRunNum}` : prev.version_tag
+        };
+      });
+    } else {
+      setFormData(prev => ({
+        ...prev,
+        name: 'YOLOv8-seg airfield run v1',
+        version_tag: 'run_v1'
+      }));
+    }
+  }, [experiments]);
+
   // Initial Bootstrapping
   useEffect(() => {
     fetchInitialData();
@@ -197,8 +221,11 @@ export default function App() {
       setDatasets(dsList);
       
       if (dsList.length > 0) {
-        fetchDatasetEmbeddings(dsList[0].id);
-        fetchDatasetVersions(dsList[0].id);
+        const hasReal = dsList.find((d: any) => d.id === 'dataset_rareplanes_real');
+        const defaultDsId = hasReal ? 'dataset_rareplanes_real' : dsList[0].id;
+        setActiveDatasetId(defaultDsId);
+        fetchDatasetEmbeddings(defaultDsId);
+        fetchDatasetVersions(defaultDsId);
       }
       
       await fetchExperiments();
@@ -279,6 +306,41 @@ export default function App() {
     }
   };
 
+  const handleDeleteDataset = async (datasetId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/datasets/${datasetId}`, {
+        method: 'DELETE'
+      });
+      const result = await response.json();
+      if (response.ok && result.status === 'success') {
+        const dRes = await fetch(`${API_BASE}/datasets`);
+        const updatedDsList = await dRes.json();
+        setDatasets(updatedDsList);
+        
+        if (activeDatasetId === datasetId) {
+          if (updatedDsList.length > 0) {
+            const nextDsId = updatedDsList[0].id;
+            setActiveDatasetId(nextDsId);
+            fetchDatasetEmbeddings(nextDsId);
+            fetchDatasetVersions(nextDsId);
+          } else {
+            setActiveDatasetId('');
+            setEmbeddings([]);
+            setSelectedEmbed(null);
+            setSelectedImageDetails(null);
+          }
+        }
+        const expRes = await fetch(`${API_BASE}/experiments`);
+        const expData = await expRes.json();
+        setExperiments(expData);
+      } else {
+        alert(result.detail || 'Failed to delete dataset.');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Error occurred while deleting dataset.');
+    }
+  };
+
   const fetchDatasetEmbeddings = async (dsId: string) => {
     try {
       const res = await fetch(`${API_BASE}/datasets/${dsId}/embeddings`);
@@ -352,7 +414,52 @@ export default function App() {
     }
   };
 
+  const handleCancelTraining = async (experimentId: string) => {
+    if (!experimentId) return;
+    try {
+      const res = await fetch(`${API_BASE}/experiments/${experimentId}/cancel`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        setActiveJob((prev: any) => prev ? { ...prev, status: 'cancelled' } : null);
+        fetchExperiments();
+      } else {
+        const errorData = await res.json();
+        alert(`Failed to cancel training: ${errorData.detail || 'Unknown error'}`);
+      }
+    } catch (e) {
+      console.error('Error cancelling training:', e);
+      alert('Error connecting to backend to cancel training.');
+    }
+  };
 
+  const handleDeleteExperiment = async (expId: string) => {
+    if (!expId) return;
+    try {
+      const res = await fetch(`${API_BASE}/experiments/${expId}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        if (activeExperimentId === expId) {
+          setActiveExperimentId(null);
+          setActiveJob(null);
+        }
+        if (compareCandId === expId) {
+          setCompareCandId('');
+        }
+        if (compareBaseId === expId) {
+          setCompareBaseId('');
+        }
+        fetchExperiments();
+      } else {
+        const errorData = await res.json();
+        alert(`Failed to delete run: ${errorData.detail || 'Unknown error'}`);
+      }
+    } catch (e) {
+      console.error('Error deleting experiment:', e);
+      alert('Error connecting to backend to delete experiment.');
+    }
+  };
 
   const selectRun = (exp: any) => {
     const isRunning = ['preparing_dataset', 'queued', 'training', 'evaluating'].includes(exp.status);
@@ -660,12 +767,18 @@ export default function App() {
       
       if (!baseExp || !candExp) return;
       
-      // Fetch evaluations for both
-      const baseEvalRes = await fetch(`${API_BASE}/experiments/${compareBaseId}/evaluation`);
-      const candEvalRes = await fetch(`${API_BASE}/experiments/${compareCandId}/evaluation`);
+      // Fetch evaluations only for completed experiments
+      let baseEval = null;
+      if (baseExp.status === 'complete') {
+        const baseEvalRes = await fetch(`${API_BASE}/experiments/${compareBaseId}/evaluation`);
+        baseEval = baseEvalRes.ok ? await baseEvalRes.json() : null;
+      }
       
-      const baseEval = baseEvalRes.ok ? await baseEvalRes.json() : null;
-      const candEval = candEvalRes.ok ? await candEvalRes.json() : null;
+      let candEval = null;
+      if (candExp.status === 'complete') {
+        const candEvalRes = await fetch(`${API_BASE}/experiments/${compareCandId}/evaluation`);
+        candEval = candEvalRes.ok ? await candEvalRes.json() : null;
+      }
       
       setCompareResults({
         base: { exp: baseExp, eval: baseEval },
@@ -803,13 +916,40 @@ export default function App() {
                       <span style={{ fontWeight: 600, fontSize: '0.7rem', color: isSelected ? 'var(--accent-cyan)' : '#fff', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '170px' }}>
                         {exp.name}
                       </span>
-                      <span style={{ 
-                        fontSize: '0.55rem', 
-                        fontFamily: 'var(--font-mono)', 
-                        color: exp.status === 'complete' ? 'var(--accent-green)' : exp.status === 'failed' ? 'var(--accent-red)' : 'var(--accent-orange)' 
-                      }}>
-                        {exp.status === 'complete' ? 'DONE' : exp.status === 'failed' ? 'FAIL' : 'RUNNING'}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ 
+                          fontSize: '0.55rem', 
+                          fontFamily: 'var(--font-mono)', 
+                          color: exp.status === 'complete' ? 'var(--accent-green)' : ['failed', 'cancelled'].includes(exp.status) ? 'var(--accent-red)' : 'var(--accent-orange)' 
+                        }}>
+                          {exp.status === 'complete' ? 'DONE' : exp.status === 'failed' ? 'FAIL' : exp.status === 'cancelled' ? 'ABORTED' : 'RUNNING'}
+                        </span>
+                        
+                        {!['queued', 'preparing_dataset', 'training', 'evaluating'].includes(exp.status) && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExperimentToDelete(exp);
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--accent-red)',
+                              cursor: 'pointer',
+                              padding: '2px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              opacity: 0.5,
+                              transition: 'opacity 0.2s'
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.opacity = '1'}
+                            onMouseLeave={(e) => e.currentTarget.style.opacity = '0.5'}
+                            title="Remove Run History"
+                          >
+                            <Trash2 style={{ width: '10px', height: '10px' }} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.55rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
@@ -868,6 +1008,7 @@ export default function App() {
               setUploadModalOpen={setUploadModalOpen}
               setCompareBaseId={setCompareBaseId}
               setCompareCandId={setCompareCandId}
+              setDatasetToDelete={setDatasetToDelete}
             />
           )}
           {wizardStep === 'curate' && (
@@ -991,14 +1132,20 @@ export default function App() {
                     display: 'flex', 
                     justifyContent: 'space-between', 
                     alignItems: 'center',
-                    background: activeJob.status === 'complete' ? 'rgba(0, 255, 135, 0.05)' : activeJob.status === 'failed' ? 'rgba(255, 0, 85, 0.05)' : 'rgba(255, 153, 0, 0.05)',
-                    border: activeJob.status === 'complete' ? '1px solid rgba(0, 255, 135, 0.2)' : activeJob.status === 'failed' ? '1px solid rgba(255, 0, 85, 0.2)' : '1px solid rgba(255, 153, 0, 0.2)'
+                    background: activeJob.status === 'complete' ? 'rgba(0, 255, 135, 0.05)' : ['failed', 'cancelled'].includes(activeJob.status) ? 'rgba(255, 0, 85, 0.05)' : 'rgba(255, 153, 0, 0.05)',
+                    border: activeJob.status === 'complete' ? '1px solid rgba(0, 255, 135, 0.2)' : ['failed', 'cancelled'].includes(activeJob.status) ? '1px solid rgba(255, 0, 85, 0.2)' : '1px solid rgba(255, 153, 0, 0.2)'
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      <span className={`led-indicator ${activeJob.status === 'complete' ? 'green' : activeJob.status === 'failed' ? 'red' : 'orange'}`}></span>
+                      <span className={`led-indicator ${activeJob.status === 'complete' ? 'green' : ['failed', 'cancelled'].includes(activeJob.status) ? 'red' : 'orange'}`}></span>
                       <div style={{ display: 'flex', flexDirection: 'column' }}>
                         <span style={{ fontSize: '0.85rem', fontWeight: 600, fontFamily: 'var(--font-display)', color: '#fff' }}>
-                          {activeJob.status === 'complete' ? 'TRAINING RUN COMPLETED SUCCESSFULLY' : activeJob.status === 'failed' ? 'TRAINING RUN FAILED' : 'ACCELERATOR TRAINING ACTIVE'}
+                          {activeJob.status === 'complete' 
+                            ? 'TRAINING RUN COMPLETED SUCCESSFULLY' 
+                            : activeJob.status === 'failed' 
+                              ? 'TRAINING RUN FAILED' 
+                              : activeJob.status === 'cancelled'
+                                ? 'TRAINING RUN CANCELLED BY USER'
+                                : 'ACCELERATOR TRAINING ACTIVE'}
                         </span>
                         <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
                           Run ID: {activeJob.id} // Target: YOLOv8 Segmentation
@@ -1007,6 +1154,18 @@ export default function App() {
                     </div>
                     
                     <div style={{ display: 'flex', gap: '10px' }}>
+                      {!['complete', 'failed', 'cancelled'].includes(activeJob.status) && (
+                        <button
+                          onClick={() => {
+                            setCancelJobConfirm(activeJob);
+                          }}
+                          className="btn-tactical border-glow-red"
+                          style={{ padding: '8px 16px', color: 'var(--accent-red)', borderColor: 'var(--accent-red)' }}
+                        >
+                          Cancel Run
+                        </button>
+                      )}
+
                       {activeJob.status === 'complete' && (
                         <button
                           onClick={() => {
@@ -1364,6 +1523,159 @@ export default function App() {
         )}
       </div>
 
+      {/* Confirm Dataset Deletion Modal */}
+      {datasetToDelete && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          background: 'rgba(4, 6, 15, 0.85)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1100
+        }}>
+          <div className="glass-panel border-glow-red" style={{ width: '450px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid var(--accent-red)' }}>
+            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', letterSpacing: '0.05em', borderBottom: '1px solid rgba(255, 0, 85, 0.2)', paddingBottom: '8px', color: 'var(--accent-red)', margin: 0 }}>
+              CONFIRM DATASET DELETION
+            </h3>
+            
+            <p style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: '#fff', margin: 0, lineHeight: '1.5' }}>
+              Are you sure you want to permanently delete dataset <span style={{ color: 'var(--accent-cyan)' }}>"{datasetToDelete.name}"</span>?
+            </p>
+            <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.4' }}>
+              This action is destructive and irreversible. It will wipe all associated version splits, hyperparameter experiments, validation metrics, and image files on disk.
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+              <button 
+                type="button" 
+                onClick={() => setDatasetToDelete(null)}
+                className="btn-tactical"
+              >
+                CANCEL
+              </button>
+              <button 
+                type="button" 
+                onClick={() => {
+                  handleDeleteDataset(datasetToDelete.id);
+                  setDatasetToDelete(null);
+                }}
+                className="btn-tactical btn-tactical-active"
+                style={{ background: 'var(--accent-red)', borderColor: 'var(--accent-red)', color: '#fff' }}
+              >
+                CONFIRM DESTRUCTION
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Cancel Training Modal */}
+      {cancelJobConfirm && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          background: 'rgba(4, 6, 15, 0.85)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1100
+        }}>
+          <div className="glass-panel border-glow-red" style={{ width: '450px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid var(--accent-red)' }}>
+            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', letterSpacing: '0.05em', borderBottom: '1px solid rgba(255, 0, 85, 0.2)', paddingBottom: '8px', color: 'var(--accent-red)', margin: 0 }}>
+              CONFIRM RUN CANCELLATION
+            </h3>
+            
+            <p style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: '#fff', margin: 0, lineHeight: '1.5' }}>
+              Are you sure you want to cancel the active training run <span style={{ color: 'var(--accent-cyan)' }}>"{cancelJobConfirm.experiment?.name || cancelJobConfirm.id}"</span>?
+            </p>
+            <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.4' }}>
+              This will safely abort the accelerator training thread, update the run status to 'cancelled', and halt all weight optimizations immediately.
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+              <button 
+                type="button" 
+                onClick={() => setCancelJobConfirm(null)}
+                className="btn-tactical"
+              >
+                KEEP RUNNING
+              </button>
+              <button 
+                type="button" 
+                onClick={() => {
+                  handleCancelTraining(cancelJobConfirm.experiment_id || cancelJobConfirm.id);
+                  setCancelJobConfirm(null);
+                }}
+                className="btn-tactical btn-tactical-active"
+                style={{ background: 'var(--accent-red)', borderColor: 'var(--accent-red)', color: '#fff' }}
+              >
+                ABORT TRAINING
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Run History Deletion Modal */}
+      {experimentToDelete && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          background: 'rgba(4, 6, 15, 0.85)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1100
+        }}>
+          <div className="glass-panel border-glow-red" style={{ width: '450px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid var(--accent-red)' }}>
+            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', letterSpacing: '0.05em', borderBottom: '1px solid rgba(255, 0, 85, 0.2)', paddingBottom: '8px', color: 'var(--accent-red)', margin: 0 }}>
+              CONFIRM RUN HISTORY DELETION
+            </h3>
+            
+            <p style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: '#fff', margin: 0, lineHeight: '1.5' }}>
+              Are you sure you want to permanently delete training run <span style={{ color: 'var(--accent-cyan)' }}>"{experimentToDelete.name}"</span>?
+            </p>
+            <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.4' }}>
+              This will erase all associated telemetry data, loss histories, logs, confusion matrices, and model weight directories on disk.
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+              <button 
+                type="button" 
+                onClick={() => setExperimentToDelete(null)}
+                className="btn-tactical"
+              >
+                CANCEL
+              </button>
+              <button 
+                type="button" 
+                onClick={() => {
+                  handleDeleteExperiment(experimentToDelete.id);
+                  setExperimentToDelete(null);
+                }}
+                className="btn-tactical btn-tactical-active"
+                style={{ background: 'var(--accent-red)', borderColor: 'var(--accent-red)', color: '#fff' }}
+              >
+                DELETE RECORD
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ZIP Ingestion Modal */}
       {uploadModalOpen && (
         <div style={{
@@ -1530,8 +1842,100 @@ function PipelineStudioView({
   const minGsd = 0.1;
   const [maxGsd, setMaxGsd] = useState(1.0);
   const [minTargets, setMinTargets] = useState(0);
-  const [showClusterMap, setShowClusterMap] = useState(false);
   const [hoveredCardIdx, setHoveredCardIdx] = useState<string | null>(null);
+
+  // Lasso Curation Filtering & Coordinate Mapping State
+  const [lassoPolygon, setLassoPolygon] = useState<{ x: number; y: number }[]>([]);
+  const [isLassoing, setIsLassoing] = useState(false);
+  const [lassoedIds, setLassoedIds] = useState<string[]>([]);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  // Point-in-polygon ray casting check
+  const isPointInPolygon = (point: { x: number; y: number }, polygon: { x: number; y: number }[]) => {
+    const x = point.x, y = point.y;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].x, yi = polygon[i].y;
+      const xj = polygon[j].x, yj = polygon[j].y;
+      
+      const intersect = ((yi > y) !== (yj > y))
+        && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  };
+
+  // Mouse handlers for drawing lasso polygon
+  const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!svgRef.current) return;
+    e.preventDefault(); // Stop text/image drag-selection conflict
+    const rect = svgRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 400;
+    const y = ((e.clientY - rect.top) / rect.height) * 400;
+    setIsLassoing(true);
+    setLassoPolygon([{ x, y }]);
+  };
+
+  const clearLasso = () => {
+    setLassoPolygon([]);
+    setLassoedIds([]);
+  };
+
+  // Reset lasso state on active dataset change
+  useEffect(() => {
+    setLassoPolygon([]);
+    setIsLassoing(false);
+    setLassoedIds([]);
+  }, [activeDatasetId]);
+
+  // Global mousemove and mouseup listeners when lassoing is active
+  useEffect(() => {
+    if (!isLassoing) return;
+
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+      if (!svgRef.current) return;
+      const rect = svgRef.current.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * 400;
+      const y = ((e.clientY - rect.top) / rect.height) * 400;
+      
+      const lastPoint = lassoPolygon[lassoPolygon.length - 1];
+      if (!lastPoint || Math.abs(lastPoint.x - x) > 1 || Math.abs(lastPoint.y - y) > 1) {
+        setLassoPolygon(prev => [...prev, { x, y }]);
+      }
+    };
+
+    const handleGlobalMouseUp = () => {
+      setIsLassoing(false);
+      
+      if (lassoPolygon.length > 2) {
+        const insideIds: string[] = [];
+        embeddings.forEach((pt: any) => {
+          const svgX = ((pt.x + 10) / 20) * 360 + 20;
+          const svgY = ((pt.y + 10) / 20) * 360 + 20;
+          if (isPointInPolygon({ x: svgX, y: svgY }, lassoPolygon)) {
+            insideIds.push(pt.image_id);
+          }
+        });
+        
+        if (insideIds.length > 0) {
+          setLassoedIds(insideIds);
+        } else {
+          setLassoedIds([]);
+          setLassoPolygon([]);
+        }
+      } else {
+        setLassoedIds([]);
+        setLassoPolygon([]);
+      }
+    };
+
+    window.addEventListener('mousemove', handleGlobalMouseMove);
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove);
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+    };
+  }, [isLassoing, lassoPolygon, embeddings]);
 
   // Space-Based Radar (SAR) Curation Parameters
   const [sensorType, setSensorType] = useState('all');
@@ -1567,6 +1971,9 @@ function PipelineStudioView({
       if (inc < minIncidence || inc > maxIncidence) return false;
     }
     
+    // Lasso Curation Filter
+    if (lassoedIds.length > 0 && !lassoedIds.includes(emb.image_id)) return false;
+    
     return true;
   });
 
@@ -1581,8 +1988,6 @@ function PipelineStudioView({
 
   const handleCardClick = (emb: any) => {
     setSelectedEmbed(emb);
-    setSelectedImageDetails(emb);
-    setWizardStep('annotate');
   };
 
 
@@ -1612,7 +2017,8 @@ function PipelineStudioView({
           strokeWidth={2}
           opacity={isFilteredOut ? 0.15 : 1}
           style={{ cursor: 'pointer', transition: 'all 0.15s ease' }}
-          onClick={() => {
+          onClick={(e) => {
+            e.stopPropagation();
             setSelectedEmbed(pt);
           }}
         />
@@ -1843,13 +2249,6 @@ function PipelineStudioView({
 
             {/* View & action triggers */}
             <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
-              <button 
-                onClick={() => setShowClusterMap(!showClusterMap)}
-                className="btn-tactical border-glow-cyan"
-                style={{ padding: '6px 12px', fontSize: '0.65rem' }}
-              >
-                {showClusterMap ? 'Show Image Grid' : 'Show PCA Embeddings'}
-              </button>
               {selectedEmbed && (
                 <button
                   onClick={() => {
@@ -1859,7 +2258,7 @@ function PipelineStudioView({
                   className="btn-tactical btn-tactical-active"
                   style={{ padding: '6px 12px', fontSize: '0.65rem' }}
                 >
-                  Label Chip <ArrowRight style={{ width: '12px', height: '12px' }} />
+                  Label Selected Chip <ArrowRight style={{ width: '12px', height: '12px' }} />
                 </button>
               )}
             </div>
@@ -1867,268 +2266,325 @@ function PipelineStudioView({
           </div>
 
           {/* Main workspace for Grid/Map (100% width) */}
-          <div className="glass-recessed" style={{ flex: 1, padding: '16px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {showClusterMap ? (
-              // Embeddings map
-              <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '16px', overflow: 'hidden' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
-                    <span>PCA CLUSTERING DEVIATION (RESNET-18 EXTRACTED)</span>
-                    <span>Filtered: {filteredEmbeddings.length} / {embeddings.length}</span>
-                  </div>
-                  
-                  <div style={{ flex: 1, border: '1px solid var(--border-color)', borderRadius: '8px', background: 'rgba(0,0,0,0.4)', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <svg width="400" height="400" style={{ maxWidth: '100%', maxHeight: '100%' }}>
-                      <line x1="200" y1="10" x2="200" y2="390" stroke="rgba(255,255,255,0.05)" />
-                      <line x1="10" y1="200" x2="390" y2="200" stroke="rgba(255,255,255,0.05)" />
-                      {renderScatterPlot()}
-                    </svg>
-                    
-                    <div style={{ position: 'absolute', bottom: '10px', left: '10px', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '0.55rem', fontFamily: 'var(--font-mono)', background: 'rgba(0,0,0,0.6)', padding: '6px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                      <span style={{ color: 'rgba(255, 153, 0, 0.8)' }}>● Cargo Ramp Airfields</span>
-                      <span style={{ color: 'rgba(0, 242, 254, 0.8)' }}>● Runway Intersections</span>
-                      <span style={{ color: 'rgba(0, 255, 137, 0.8)' }}>● Taxiways / Aprons</span>
-                      <span style={{ color: 'rgba(0, 114, 255, 0.7)' }}>● Other Features</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Selected node card detail panel */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto' }}>
-                  <h4 style={{ fontFamily: 'var(--font-display)', fontSize: '0.75rem', color: 'var(--accent-cyan)', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px' }}>
-                    CHIP METADATA DETAILS
-                  </h4>
-                  {selectedEmbed ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <div style={{ height: '180px', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-color)', position: 'relative' }}>
+          <div className="glass-recessed" style={{ flex: 1, padding: '16px', display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '16px', overflow: 'hidden' }}>
+            
+            {/* Left side: FiftyOne Image Grids */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', height: '100%', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                <span>FIFTYONE IMAGE GRIDS (WorldView Imagery)</span>
+                <span>Filtered: {filteredEmbeddings.length} / {embeddings.length} chips</span>
+              </div>
+              
+              <div style={{ flex: 1, overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '12px' }}>
+                {filteredEmbeddings.map((emb: any) => {
+                  const numTargets = emb.labels?.length || 0;
+                  const isSelected = selectedEmbed && selectedEmbed.image_id === emb.image_id;
+                  const isHovered = hoveredCardIdx === emb.image_id;
+                  return (
+                    <div 
+                      key={emb.image_id} 
+                      onClick={() => handleCardClick(emb)}
+                      onMouseEnter={() => setHoveredCardIdx(emb.image_id)}
+                      onMouseLeave={() => setHoveredCardIdx(null)}
+                      className="glass-panel" 
+                      style={{ 
+                        padding: '6px', 
+                        cursor: 'pointer', 
+                        display: 'flex', 
+                        flexDirection: 'column', 
+                        gap: '6px',
+                        borderColor: isSelected ? 'var(--accent-cyan)' : isHovered ? 'rgba(255,255,255,0.2)' : 'var(--border-color)',
+                        boxShadow: isSelected ? '0 0 12px rgba(0, 242, 254, 0.15)' : 'none',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <div style={{ height: '90px', background: '#000', borderRadius: '6px', overflow: 'hidden', position: 'relative' }}>
                         <img 
-                          src={getImageUrl(activeDatasetId, selectedEmbed.image_id)} 
-                          alt="Selected chip preview"
+                          src={getImageUrl(activeDatasetId, emb.image_id)} 
+                          alt={emb.image_id} 
                           style={{ 
                             width: '100%', 
                             height: '100%', 
                             objectFit: 'cover',
-                            filter: simulateBackscatter && selectedEmbed.metadata?.sensor_type === 'SAR'
+                            filter: simulateBackscatter && emb.metadata?.sensor_type === 'SAR'
                               ? 'grayscale(1) contrast(2.2) brightness(1.2) sepia(0.5) hue-rotate(140deg)'
                               : 'none',
                             transition: 'filter 0.3s ease'
                           }}
                         />
-                        <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }} viewBox="0 0 512 512">
-                          {selectedEmbed.labels && selectedEmbed.labels.map((lbl: any, idx: number) => {
-                            const bbox = lbl.bbox || [0,0,0,0];
-                            const color = CLASS_COLORS[lbl.class_id] || '#00f2fe';
-                            return (
-                              <rect 
-                                key={idx}
-                                x={bbox[0] * 512}
-                                y={bbox[1] * 512}
-                                width={Math.max(10, (bbox[2] - bbox[0]) * 512)}
-                                height={Math.max(10, (bbox[3] - bbox[1]) * 512)}
-                                fill="none"
-                                stroke={color}
-                                strokeWidth={3}
-                              />
-                            );
-                          })}
-                        </svg>
-                      </div>
-
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
-                        <div className="glass-panel" style={{ padding: '8px', background: 'none' }}>
-                          <div style={{ color: 'var(--text-secondary)' }}>IMAGE ID</div>
-                          <div style={{ color: '#fff', fontWeight: 600 }}>{selectedEmbed.image_id}</div>
-                        </div>
-                        <div className="glass-panel" style={{ padding: '8px', background: 'none' }}>
-                          <div style={{ color: 'var(--text-secondary)' }}>SITE CODE</div>
-                          <div style={{ color: '#fff', fontWeight: 600 }}>{selectedEmbed.metadata?.airport_code || 'KIAD'}</div>
-                        </div>
-                        <div className="glass-panel" style={{ padding: '8px', background: 'none' }}>
-                          <div style={{ color: 'var(--text-secondary)' }}>RESOLUTION</div>
-                          <div style={{ color: '#fff', fontWeight: 600 }}>{selectedEmbed.metadata?.gsd || 0.3}m GSD</div>
-                        </div>
-                        <div className="glass-panel" style={{ padding: '8px', background: 'none' }}>
-                          <div style={{ color: 'var(--text-secondary)' }}>TARGETS</div>
-                          <div style={{ color: 'var(--accent-orange)', fontWeight: 600 }}>{selectedEmbed.labels?.length || 0} Aircraft</div>
-                        </div>
-                        <div className="glass-panel" style={{ padding: '8px', background: 'none' }}>
-                          <div style={{ color: 'var(--text-secondary)' }}>SENSOR TYPE</div>
-                          <div style={{ color: selectedEmbed.metadata?.sensor_type === 'SAR' ? 'var(--accent-cyan)' : '#fff', fontWeight: 600 }}>
-                            {selectedEmbed.metadata?.sensor_type || 'Optical (WorldView)'}
-                          </div>
-                        </div>
-                        <div className="glass-panel" style={{ padding: '8px', background: 'none' }}>
-                          <div style={{ color: 'var(--text-secondary)' }}>POL / LOOK ANGLE</div>
-                          <div style={{ color: '#fff', fontWeight: 600 }}>
-                            {selectedEmbed.metadata?.sensor_type === 'SAR'
-                              ? `${selectedEmbed.metadata?.sar_polarization} / ${selectedEmbed.metadata?.incidence_angle}°`
-                              : 'N/A'}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div style={{ background: 'rgba(0,0,0,0.2)', padding: '10px', borderRadius: '6px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <div style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>BOUNDS FOOTPRINT (E / N)</div>
-                        <div>Min: E {selectedEmbed.metadata?.bounds?.min_easting?.toFixed(1) || 296000}m / N {selectedEmbed.metadata?.bounds?.min_northing?.toFixed(1) || 4312000}m</div>
-                        <div>Max: E {selectedEmbed.metadata?.bounds?.max_easting?.toFixed(1) || 296256}m / N {selectedEmbed.metadata?.bounds?.max_northing?.toFixed(1) || 4312256}m</div>
-                      </div>
-
-                      {/* Embeddings PCA Similarity search section */}
-                      <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', fontWeight: 600 }}>
-                          EMBEDDING VECTOR SIMILARITY ANALYSIS
-                        </span>
                         
-                        {/* Outlier score display */}
-                        <div style={{ background: 'rgba(255, 153, 0, 0.04)', border: '1px solid rgba(255, 153, 0, 0.15)', padding: '8px', borderRadius: '4px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--accent-orange)' }}>
-                          ANOMALY OUTLIER SCORE: {(() => {
-                            const xs = embeddings.map((e: any) => e.x);
-                            const ys = embeddings.map((e: any) => e.y);
-                            const cx = xs.reduce((a: number, b: number) => a + b, 0) / (embeddings.length || 1);
-                            const cy = ys.reduce((a: number, b: number) => a + b, 0) / (embeddings.length || 1);
-                            const dx = selectedEmbed.x - cx;
-                            const dy = selectedEmbed.y - cy;
-                            const dist = Math.sqrt(dx * dx + dy * dy);
-                            const maxDist = Math.max(...embeddings.map((e: any) => Math.sqrt((e.x - cx) ** 2 + (e.y - cy) ** 2))) || 1;
-                            return ((dist / maxDist) * 100).toFixed(1);
-                          })()}%
-                        </div>
-
-                        {/* Similarity neighbors grid */}
-                        <span style={{ fontSize: '0.55rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
-                          NEAREST VECTORS IN EMBEDDINGS (EUCLIDEAN PCA MATCHES):
-                        </span>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
-                          {embeddings
-                            .filter((emb: any) => emb.image_id !== selectedEmbed.image_id)
-                            .map((emb: any) => {
-                              const dx = emb.x - selectedEmbed.x;
-                              const dy = emb.y - selectedEmbed.y;
-                              const dist = Math.sqrt(dx * dx + dy * dy);
-                              return { emb, dist };
-                            })
-                            .sort((a: any, b: any) => a.dist - b.dist)
-                            .slice(0, 4)
-                            .map((neigh: any) => (
-                              <div 
-                                key={neigh.emb.image_id}
-                                onClick={() => {
-                                  setSelectedEmbed(neigh.emb);
-                                }}
-                                style={{ cursor: 'pointer', textAlign: 'center' }}
-                              >
-                                <img 
-                                  src={getImageUrl(activeDatasetId, neigh.emb.image_id)} 
-                                  style={{ width: '100%', height: '35px', objectFit: 'cover', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.05)' }} 
+                        {(isHovered || isSelected) && emb.labels && (
+                          <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }} viewBox="0 0 512 512">
+                            {emb.labels.map((lbl: any, idx: number) => {
+                              const bbox = lbl.bbox || [0,0,0,0];
+                              const color = CLASS_COLORS[lbl.class_id] || '#00f2fe';
+                              return (
+                                <rect 
+                                  key={idx}
+                                  x={bbox[0] * 512}
+                                  y={bbox[1] * 512}
+                                  width={Math.max(12, (bbox[2] - bbox[0]) * 512)}
+                                  height={Math.max(12, (bbox[3] - bbox[1]) * 512)}
+                                  fill="none"
+                                  stroke={color}
+                                  strokeWidth={4}
                                 />
-                                <div style={{ fontSize: '0.5rem', color: 'var(--accent-cyan)', marginTop: '2px', fontFamily: 'var(--font-mono)' }}>
-                                  d={neigh.dist.toFixed(2)}
-                                </div>
-                              </div>
-                            ))
-                          }
+                              );
+                            })}
+                          </svg>
+                        )}
+                        
+                        <div style={{ position: 'absolute', top: '4px', right: '4px', background: 'rgba(0,0,0,0.6)', padding: '2px 6px', borderRadius: '4px', fontSize: '0.55rem', fontFamily: 'var(--font-mono)', color: numTargets > 0 ? 'var(--accent-orange)' : 'var(--text-secondary)' }}>
+                          {numTargets} aircraft
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)', padding: '0 2px' }}>
+                        <span style={{ color: '#fff', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{emb.image_id}</span>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '0.55rem' }}>
+                          <span>GSD: {emb.metadata?.gsd || 0.3}m</span>
+                          <span style={{ color: emb.metadata?.sensor_type === 'SAR' ? 'var(--accent-cyan)' : 'var(--text-secondary)', fontWeight: 600 }}>
+                            {emb.metadata?.sensor_type === 'SAR' ? `SAR (${emb.metadata?.sar_polarization})` : 'OPTICAL'}
+                          </span>
                         </div>
                       </div>
                     </div>
-                  ) : (
-                    <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', textAlign: 'center', marginTop: '40px' }}>
-                      Click a node on the cluster map to analyze coordinates.
-                    </div>
-                  )}
-                </div>
+                  );
+                })}
+
+                {filteredEmbeddings.length === 0 && (
+                  <div style={{ gridColumn: '1/-1', padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem', fontFamily: 'var(--font-mono)' }}>
+                    No sat-chips match the curation filters selected. Try relaxing filters.
+                  </div>
+                )}
               </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', height: '100%' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
-                  <span>FIFTYONE IMAGE GRIDS (WorldView Imagery)</span>
-                  <span>Filtered: {filteredEmbeddings.length} / {embeddings.length} chips</span>
+            </div>
+
+            {/* Right side: PCA Scatter Plot + Legend + Detail Panel */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', overflow: 'hidden', height: '100%' }}>
+              
+              {/* Upper section: PCA Scatter Plot */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: '0 0 auto', background: 'rgba(0,0,0,0.25)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                  <span>PCA EMBEDDINGS DISTRIBUTION (DRAG TO LASSO)</span>
+                  {lassoedIds.length > 0 && (
+                    <span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>LASSO FILTER ACTIVE</span>
+                  )}
                 </div>
                 
-                <div style={{ flex: 1, overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '12px' }}>
-                  {filteredEmbeddings.map((emb: any) => {
-                    const numTargets = emb.labels?.length || 0;
-                    const isSelected = selectedEmbed && selectedEmbed.image_id === emb.image_id;
-                    const isHovered = hoveredCardIdx === emb.image_id;
-                    return (
-                      <div 
-                        key={emb.image_id} 
-                        onClick={() => handleCardClick(emb)}
-                        onMouseEnter={() => setHoveredCardIdx(emb.image_id)}
-                        onMouseLeave={() => setHoveredCardIdx(null)}
-                        className="glass-panel" 
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+                  {/* Scatter Plot Box */}
+                  <div style={{ border: '1px solid var(--border-color)', borderRadius: '8px', background: 'rgba(0,0,0,0.4)', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '220px', height: '220px', userSelect: 'none', overflow: 'hidden' }}>
+                    <svg 
+                      ref={svgRef}
+                      width="220" 
+                      height="220" 
+                      viewBox="0 0 400 400"
+                      onMouseDown={handleMouseDown}
+                      style={{ maxWidth: '100%', maxHeight: '100%', cursor: 'crosshair' }}
+                    >
+                      <line x1="200" y1="10" x2="200" y2="390" stroke="rgba(255,255,255,0.05)" />
+                      <line x1="10" y1="200" x2="390" y2="200" stroke="rgba(255,255,255,0.05)" />
+                      {renderScatterPlot()}
+                      {lassoPolygon.length > 0 && (
+                        <polyline
+                          points={lassoPolygon.map(p => `${p.x},${p.y}`).join(' ')}
+                          fill="rgba(0, 242, 254, 0.08)"
+                          stroke="var(--accent-cyan)"
+                          strokeWidth="3"
+                          strokeDasharray="5 3"
+                        />
+                      )}
+                    </svg>
+                  </div>
+                  
+                  {/* Custom color legend for scene types */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)', flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '4px', marginBottom: '2px', color: 'var(--text-secondary)' }}>SCENE CLASS LEGEND</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'rgba(255, 153, 0, 0.9)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontSize: '0.8rem' }}>●</span> Cargo Ramps
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'rgba(0, 242, 254, 0.9)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontSize: '0.8rem' }}>●</span> Runway Intersect.
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'rgba(0, 255, 137, 0.9)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontSize: '0.8rem' }}>●</span> Taxiways / Aprons
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'rgba(0, 114, 255, 0.8)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontSize: '0.8rem' }}>●</span> Other Features
+                    </div>
+                    
+                    {lassoedIds.length > 0 && (
+                      <button
+                        onClick={clearLasso}
+                        className="btn-tactical border-glow-cyan"
                         style={{ 
-                          padding: '6px', 
-                          cursor: 'pointer', 
+                          marginTop: '8px', 
+                          padding: '4px 8px', 
+                          fontSize: '0.55rem', 
                           display: 'flex', 
-                          flexDirection: 'column', 
-                          gap: '6px',
-                          borderColor: isSelected ? 'var(--accent-cyan)' : isHovered ? 'rgba(255,255,255,0.2)' : 'var(--border-color)',
-                          boxShadow: isSelected ? '0 0 12px rgba(0, 242, 254, 0.15)' : 'none',
-                          transition: 'all 0.15s ease'
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '4px', 
+                          width: 'fit-content' 
                         }}
                       >
-                        <div style={{ height: '90px', background: '#000', borderRadius: '6px', overflow: 'hidden', position: 'relative' }}>
-                          <img 
-                            src={getImageUrl(activeDatasetId, emb.image_id)} 
-                            alt={emb.image_id} 
-                            style={{ 
-                              width: '100%', 
-                              height: '100%', 
-                              objectFit: 'cover',
-                              filter: simulateBackscatter && emb.metadata?.sensor_type === 'SAR'
-                                ? 'grayscale(1) contrast(2.2) brightness(1.2) sepia(0.5) hue-rotate(140deg)'
-                                : 'none',
-                              transition: 'filter 0.3s ease'
-                            }}
-                          />
-                          
-                          {(isHovered || isSelected) && emb.labels && (
-                            <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }} viewBox="0 0 512 512">
-                              {emb.labels.map((lbl: any, idx: number) => {
-                                const bbox = lbl.bbox || [0,0,0,0];
-                                const color = CLASS_COLORS[lbl.class_id] || '#00f2fe';
-                                return (
-                                  <rect 
-                                    key={idx}
-                                    x={bbox[0] * 512}
-                                    y={bbox[1] * 512}
-                                    width={Math.max(12, (bbox[2] - bbox[0]) * 512)}
-                                    height={Math.max(12, (bbox[3] - bbox[1]) * 512)}
-                                    fill="none"
-                                    stroke={color}
-                                    strokeWidth={4}
-                                  />
-                                );
-                              })}
-                            </svg>
-                          )}
-                          
-                          <div style={{ position: 'absolute', top: '4px', right: '4px', background: 'rgba(0,0,0,0.6)', padding: '2px 6px', borderRadius: '4px', fontSize: '0.55rem', fontFamily: 'var(--font-mono)', color: numTargets > 0 ? 'var(--accent-orange)' : 'var(--text-secondary)' }}>
-                            {numTargets} aircraft
-                          </div>
-                        </div>
-
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)', padding: '0 2px' }}>
-                          <span style={{ color: '#fff', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{emb.image_id}</span>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '0.55rem' }}>
-                            <span>GSD: {emb.metadata?.gsd || 0.3}m</span>
-                            <span style={{ color: emb.metadata?.sensor_type === 'SAR' ? 'var(--accent-cyan)' : 'var(--text-secondary)', fontWeight: 600 }}>
-                              {emb.metadata?.sensor_type === 'SAR' ? `SAR (${emb.metadata?.sar_polarization})` : 'OPTICAL'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {filteredEmbeddings.length === 0 && (
-                    <div style={{ gridColumn: '1/-1', padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem', fontFamily: 'var(--font-mono)' }}>
-                      No sat-chips match the curation filters selected. Try relaxing filters.
-                    </div>
-                  )}
+                        <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="18" y1="6" x2="6" y2="18"></line>
+                          <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                        CLEAR LASSO ({lassoedIds.length})
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
-            )}
+              
+              {/* Lower section: Selected node card detail panel */}
+              <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto', padding: '12px', background: 'rgba(0,0,0,0.15)' }}>
+                <h4 style={{ fontFamily: 'var(--font-display)', fontSize: '0.75rem', color: 'var(--accent-cyan)', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', margin: 0 }}>
+                  CHIP METADATA DETAILS
+                </h4>
+                {selectedEmbed ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    <div style={{ height: '140px', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-color)', position: 'relative', flexShrink: 0 }}>
+                      <img 
+                        src={getImageUrl(activeDatasetId, selectedEmbed.image_id)} 
+                        alt="Selected chip preview"
+                        style={{ 
+                          width: '100%', 
+                          height: '100%', 
+                          objectFit: 'cover',
+                          filter: simulateBackscatter && selectedEmbed.metadata?.sensor_type === 'SAR'
+                            ? 'grayscale(1) contrast(2.2) brightness(1.2) sepia(0.5) hue-rotate(140deg)'
+                            : 'none',
+                          transition: 'filter 0.3s ease'
+                        }}
+                      />
+                      <svg style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none' }} viewBox="0 0 512 512">
+                        {selectedEmbed.labels && selectedEmbed.labels.map((lbl: any, idx: number) => {
+                          const bbox = lbl.bbox || [0,0,0,0];
+                          const color = CLASS_COLORS[lbl.class_id] || '#00f2fe';
+                          return (
+                            <rect 
+                              key={idx}
+                              x={bbox[0] * 512}
+                              y={bbox[1] * 512}
+                              width={Math.max(10, (bbox[2] - bbox[0]) * 512)}
+                              height={Math.max(10, (bbox[3] - bbox[1]) * 512)}
+                              fill="none"
+                              stroke={color}
+                              strokeWidth={3}
+                            />
+                          );
+                        })}
+                      </svg>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, fontSize: '0.65rem', fontFamily: 'var(--font-mono)' }}>
+                      <div className="glass-panel" style={{ padding: '6px', background: 'none' }}>
+                        <div style={{ color: 'var(--text-secondary)', fontSize: '0.55rem' }}>IMAGE ID</div>
+                        <div style={{ color: '#fff', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedEmbed.image_id}</div>
+                      </div>
+                      <div className="glass-panel" style={{ padding: '6px', background: 'none' }}>
+                        <div style={{ color: 'var(--text-secondary)', fontSize: '0.55rem' }}>SITE CODE</div>
+                        <div style={{ color: '#fff', fontWeight: 600 }}>{selectedEmbed.metadata?.airport_code || 'KIAD'}</div>
+                      </div>
+                      <div className="glass-panel" style={{ padding: '6px', background: 'none' }}>
+                        <div style={{ color: 'var(--text-secondary)', fontSize: '0.55rem' }}>RESOLUTION</div>
+                        <div style={{ color: '#fff', fontWeight: 600 }}>{selectedEmbed.metadata?.gsd || 0.3}m GSD</div>
+                      </div>
+                      <div className="glass-panel" style={{ padding: '6px', background: 'none' }}>
+                        <div style={{ color: 'var(--text-secondary)', fontSize: '0.55rem' }}>TARGETS</div>
+                        <div style={{ color: 'var(--accent-orange)', fontWeight: 600 }}>{selectedEmbed.labels?.length || 0} Aircraft</div>
+                      </div>
+                      <div className="glass-panel" style={{ padding: '6px', background: 'none' }}>
+                        <div style={{ color: 'var(--text-secondary)', fontSize: '0.55rem' }}>SENSOR TYPE</div>
+                        <div style={{ color: selectedEmbed.metadata?.sensor_type === 'SAR' ? 'var(--accent-cyan)' : '#fff', fontWeight: 600 }}>
+                          {selectedEmbed.metadata?.sensor_type || 'Optical (WorldView)'}
+                        </div>
+                      </div>
+                      <div className="glass-panel" style={{ padding: '6px', background: 'none' }}>
+                        <div style={{ color: 'var(--text-secondary)', fontSize: '0.55rem' }}>POL / LOOK ANGLE</div>
+                        <div style={{ color: '#fff', fontWeight: 600 }}>
+                          {selectedEmbed.metadata?.sensor_type === 'SAR'
+                            ? `${selectedEmbed.metadata?.sar_polarization} / ${selectedEmbed.metadata?.incidence_angle}°`
+                            : 'N/A'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '6px', fontSize: '0.6rem', fontFamily: 'var(--font-mono)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      <div style={{ color: 'var(--text-secondary)', fontWeight: 600, fontSize: '0.55rem' }}>BOUNDS FOOTPRINT (E / N)</div>
+                      <div>Min: E {selectedEmbed.metadata?.bounds?.min_easting?.toFixed(1) || 296000}m / N {selectedEmbed.metadata?.bounds?.min_northing?.toFixed(1) || 4312000}m</div>
+                      <div>Max: E {selectedEmbed.metadata?.bounds?.max_easting?.toFixed(1) || 296256}m / N {selectedEmbed.metadata?.bounds?.max_northing?.toFixed(1) || 4312256}m</div>
+                    </div>
+
+                    {/* Embeddings PCA Similarity search section */}
+                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <span style={{ fontSize: '0.6rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                        EMBEDDING VECTOR SIMILARITY ANALYSIS
+                      </span>
+                      
+                      {/* Outlier score display */}
+                      <div style={{ background: 'rgba(255, 153, 0, 0.04)', border: '1px solid rgba(255, 153, 0, 0.15)', padding: '6px', borderRadius: '4px', fontSize: '0.6rem', fontFamily: 'var(--font-mono)', color: 'var(--accent-orange)' }}>
+                        ANOMALY OUTLIER SCORE: {(() => {
+                          const xs = embeddings.map((e: any) => e.x);
+                          const ys = embeddings.map((e: any) => e.y);
+                          const cx = xs.reduce((a: number, b: number) => a + b, 0) / (embeddings.length || 1);
+                          const cy = ys.reduce((a: number, b: number) => a + b, 0) / (embeddings.length || 1);
+                          const dx = selectedEmbed.x - cx;
+                          const dy = selectedEmbed.y - cy;
+                          const dist = Math.sqrt(dx * dx + dy * dy);
+                          const maxDist = Math.max(...embeddings.map((e: any) => Math.sqrt((e.x - cx) ** 2 + (e.y - cy) ** 2))) || 1;
+                          return ((dist / maxDist) * 100).toFixed(1);
+                        })()}%
+                      </div>
+
+                      {/* Similarity neighbors grid */}
+                      <span style={{ fontSize: '0.55rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+                        NEAREST VECTORS IN EMBEDDINGS (EUCLIDEAN PCA MATCHES):
+                      </span>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
+                        {embeddings
+                          .filter((emb: any) => emb.image_id !== selectedEmbed.image_id)
+                          .map((emb: any) => {
+                            const dx = emb.x - selectedEmbed.x;
+                            const dy = emb.y - selectedEmbed.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            return { emb, dist };
+                          })
+                          .sort((a: any, b: any) => a.dist - b.dist)
+                          .slice(0, 4)
+                          .map((neigh: any) => (
+                            <div 
+                              key={neigh.emb.image_id}
+                              onClick={() => {
+                                setSelectedEmbed(neigh.emb);
+                              }}
+                              style={{ cursor: 'pointer', textAlign: 'center' }}
+                            >
+                              <img 
+                                src={getImageUrl(activeDatasetId, neigh.emb.image_id)} 
+                                style={{ width: '100%', height: '35px', objectFit: 'cover', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.05)' }} 
+                              />
+                              <div style={{ fontSize: '0.5rem', color: 'var(--accent-cyan)', marginTop: '2px', fontFamily: 'var(--font-mono)' }}>
+                                d={neigh.dist.toFixed(2)}
+                              </div>
+                            </div>
+                          ))
+                        }
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem', textAlign: 'center', marginTop: '40px', fontFamily: 'var(--font-mono)' }}>
+                    Select a chip from the grid or dot on the PCA map to analyze coordinates.
+                  </div>
+                )}
+              </div>
+            </div>
+            
           </div>
 
           {/* Linear workflow footer buttons */}

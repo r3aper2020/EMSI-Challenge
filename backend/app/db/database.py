@@ -322,6 +322,14 @@ class Database:
             cursor = conn.execute("SELECT COUNT(*) FROM experiments WHERE pipeline_id = ?", (pipeline_id,))
             run_number = cursor.fetchone()[0] + 1
             
+            # Format name with auto-incrementing version suffix if applicable
+            import re
+            pattern = r'(?:run_)?v\d+$'
+            if re.search(pattern, name, flags=re.IGNORECASE):
+                name = re.sub(pattern, f"v{run_number}", name, flags=re.IGNORECASE)
+            else:
+                name = f"{name} v{run_number}"
+            
             conn.execute(
                 "INSERT INTO experiments (id, project_id, pipeline_id, dataset_version_id, name, task_type, model_type, config_json, parent_experiment_id, status, created_at, run_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (exp_id, project_id, pipeline_id, dataset_version_id, name, task_type, model_type, json.dumps(config_dict) if config_dict else "{}", parent_id, "queued", time.time(), run_number)
@@ -541,4 +549,36 @@ class Database:
     def clear_llm_commands(self, project_id):
         with self._get_conn() as conn:
             conn.execute("DELETE FROM llm_commands WHERE project_id = ?", (project_id,))
+            conn.commit()
+
+    def delete_dataset(self, dataset_id):
+        with self._get_conn() as conn:
+            # 1. Fetch all version IDs associated with the dataset
+            versions = conn.execute("SELECT id FROM dataset_versions WHERE dataset_id = ?", (dataset_id,)).fetchall()
+            version_ids = [v[0] for v in versions]
+            
+            # 2. Delete evaluations and experiments referencing those version IDs
+            for vid in version_ids:
+                conn.execute("DELETE FROM evaluations WHERE dataset_version_id = ?", (vid,))
+                conn.execute("DELETE FROM experiments WHERE dataset_version_id = ?", (vid,))
+                conn.execute("DELETE FROM dataset_versions WHERE id = ?", (vid,))
+            
+            # 3. Delete embeddings associated with the dataset (cascades via ON DELETE CASCADE in schema, but clear explicitly to be safe)
+            conn.execute("DELETE FROM embeddings WHERE dataset_id = ?", (dataset_id,))
+            
+            # 4. Delete the dataset row
+            conn.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
+            conn.commit()
+
+    def delete_experiment(self, exp_id):
+        import shutil
+        exp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "storage", "experiments", exp_id)
+        if os.path.exists(exp_dir):
+            try:
+                shutil.rmtree(exp_dir)
+            except Exception as e:
+                print(f"Error removing experiment directory {exp_dir}: {e}")
+                
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM experiments WHERE id = ?", (exp_id,))
             conn.commit()

@@ -202,3 +202,27 @@ class DatasetService:
             
     def get_version_details(self, version_id):
         return self.db.get_dataset_version(version_id)
+
+    def delete_dataset(self, dataset_id):
+        dataset = self.db.get_dataset(dataset_id)
+        if not dataset:
+            return False
+
+        # 1. Delete all exported version folders from storage
+        versions = self.db.get_dataset_versions(dataset_id)
+        for ver in versions:
+            if ver["export_path"] and os.path.exists(ver["export_path"]):
+                shutil.rmtree(ver["export_path"], ignore_errors=True)
+
+        # 2. Delete raw dataset folder if it resides in backend/data (which includes storage/)
+        raw_path = dataset["folder_path"]
+        if raw_path and os.path.exists(raw_path):
+            abs_raw_path = os.path.abspath(raw_path)
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            abs_data_dir = os.path.abspath(os.path.join(base_dir, "data"))
+            if abs_raw_path.startswith(abs_data_dir) and abs_raw_path != abs_data_dir:
+                shutil.rmtree(abs_raw_path, ignore_errors=True)
+
+        # 3. Trigger SQLite cascading database deletion
+        self.db.delete_dataset(dataset_id)
+        return True

@@ -271,6 +271,13 @@ def get_dataset(dataset_id: str):
         raise HTTPException(status_code=404, detail="Dataset not found")
     return ds
 
+@app.delete("/api/datasets/{dataset_id}")
+def delete_dataset(dataset_id: str):
+    success = dataset_service.delete_dataset(dataset_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return {"status": "success", "message": "Dataset successfully deleted."}
+
 def deterministic_hash(s: str) -> int:
     h = 0
     for char in s:
@@ -613,6 +620,19 @@ def get_experiment(exp_id: str):
         raise HTTPException(status_code=404, detail="Experiment not found")
     return exp
 
+@app.delete("/api/experiments/{exp_id}")
+def delete_experiment(exp_id: str):
+    exp = db.get_experiment(exp_id)
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    
+    job = db.get_training_job_by_experiment(exp_id)
+    if job and job["status"] in ("queued", "preparing_dataset", "training", "evaluating"):
+        raise HTTPException(status_code=400, detail="Cannot delete an active training run. Please cancel it first.")
+        
+    db.delete_experiment(exp_id)
+    return {"status": "success", "message": "Experiment run deleted successfully."}
+
 @app.post("/api/experiments")
 def create_experiment_and_start_job(data: ExperimentCreate):
     exp_id = f"exp_{int(time.time())}"
@@ -666,6 +686,23 @@ def get_experiment_evaluation(exp_id: str):
     if not eval_record:
         raise HTTPException(status_code=404, detail="Evaluation results not available yet")
     return eval_record
+
+@app.post("/api/experiments/{exp_id}/cancel")
+def cancel_experiment_training_job(exp_id: str):
+    with db._get_conn() as conn:
+        row = conn.execute("SELECT id, status FROM training_jobs WHERE experiment_id = ?", (exp_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Training job not found for this experiment")
+        job_id, status = row
+        if status not in ("queued", "preparing_dataset", "training"):
+            raise HTTPException(status_code=400, detail=f"Job cannot be cancelled in status '{status}'")
+            
+        # Update statuses to cancelled
+        conn.execute("UPDATE training_jobs SET status = 'cancelled' WHERE id = ?", (job_id,))
+        conn.execute("UPDATE experiments SET status = 'cancelled' WHERE id = ?", (exp_id,))
+        conn.commit()
+        
+    return {"status": "success", "message": "Job cancellation request sent."}
 
 @app.get("/api/projects/{project_id}/llm-commands")
 def get_project_llm_commands(project_id: str):
@@ -747,13 +784,26 @@ def process_llm_command(data: LLMCommandRequest):
                 job_id = f"job_{int(time.time())}"
                 db.create_training_job(job_id, exp_id, total_epochs=config.get("epochs", 3))
                 
+                epochs = config.get("epochs", 3)
+                batch = config.get("batch", 2)
+                imgsz = config.get("imgsz", 512)
+                aug = config.get("augmentations", {})
+                aug_desc = []
+                if aug.get("fliplr"): aug_desc.append("fliplr")
+                if aug.get("flipud"): aug_desc.append("flipud")
+                if aug.get("degrees", 0.0) > 0.0: aug_desc.append(f"rotate({aug.get('degrees')}deg)")
+                aug_text = f", augmentations: {', '.join(aug_desc)}" if aug_desc else ""
+
                 response["workflow_result"] = {
                     "project_id": project_id,
                     "dataset_version_id": version["id"],
                     "experiment_id": exp_id,
                     "job_id": job_id
                 }
-                response["message"] = f"Successfully exported '{payload['dataset_id']}' with {int(payload['train_split']*100)}/{int(payload['val_split']*100)} split, created experiment '{exp_id}', and started training job '{job_id}'."
+                response["message"] = (
+                    f"Successfully exported '{payload['dataset_id']}' with {int(payload['train_split']*100)}/{int(payload['val_split']*100)} split, "
+                    f"created experiment '{exp_id}' (epochs={epochs}, batch={batch}, imgsz={imgsz}{aug_text}), and started training job '{job_id}'."
+                )
                 
             elif action == "clone_experiment":
                 source_id = payload["source_experiment_id"]
@@ -812,6 +862,14 @@ def process_llm_command(data: LLMCommandRequest):
             )
             
         return response
+    except ValueError as e:
+        err_msg = f"Failed to execute command: {str(e)}"
+        db.save_llm_command(
+            project_id="proj_default",
+            sender="system",
+            text=err_msg
+        )
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         err_msg = f"Failed to execute command: {str(e)}"
         db.save_llm_command(
