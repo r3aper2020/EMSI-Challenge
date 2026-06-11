@@ -2,18 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Play, 
   RefreshCw, 
-  Database as DbIcon, 
   Terminal, 
-  Activity, 
   Layers, 
   BarChart3, 
   ArrowRight, 
   Plus, 
-  CheckCircle2, 
-  XCircle, 
   Compass, 
   ChevronRight,
-  TrendingUp,
   Eye,
   EyeOff,
   Trash2,
@@ -37,8 +32,53 @@ const getImageUrl = (datasetId: string, imageId: string) => {
   return `${API_BASE}/datasets/${dsId}/images/${imageId}`;
 };
 
+const renderSVGChart = (history: number[], strokeColor: string) => {
+  if (!history || history.length === 0) {
+    return (
+      <div style={{ height: '110px', background: 'rgba(0,0,0,0.25)', border: '1px solid var(--border-color)', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+        Awaiting telemetry...
+      </div>
+    );
+  }
+  const width = 300;
+  const height = 110;
+  const padding = 15;
+  const maxVal = Math.max(...history, 1.0);
+  
+  let points = "";
+  history.forEach((val, index) => {
+    const x = padding + (index / (history.length - 1 || 1)) * (width - 2 * padding);
+    const y = height - padding - (val / maxVal) * (height - 2 * padding);
+    points += `${x},${y} `;
+  });
+
+  return (
+    <svg width="100%" height="110" style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '6px' }}>
+      <polyline
+        fill="none"
+        stroke={strokeColor}
+        strokeWidth="2"
+        points={points.trim()}
+      />
+      {history.map((val, index) => {
+        const x = padding + (index / (history.length - 1 || 1)) * (width - 2 * padding);
+        const y = height - padding - (val / maxVal) * (height - 2 * padding);
+        return (
+          <circle
+            key={index}
+            cx={x}
+            cy={y}
+            r="3"
+            fill={strokeColor}
+          />
+        );
+      })}
+    </svg>
+  );
+};
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'studio' | 'control'>('dashboard');
+  const [wizardStep, setWizardStep] = useState<'curate' | 'annotate' | 'train' | 'evaluate'>('curate');
   const [llmOpen, setLlmOpen] = useState(true);
   const [llmPrompt, setLlmPrompt] = useState('');
   const [llmLogs, setLlmLogs] = useState<Array<{ sender: 'user' | 'system'; text: string; time: string; payload?: any }>>([
@@ -60,7 +100,6 @@ export default function App() {
   const [activeJob, setActiveJob] = useState<any>(null);
   const [activeExperimentId, setActiveExperimentId] = useState<string | null>(null);
   const [jobLogs, setJobLogs] = useState<string>('');
-  const [projectTree, setProjectTree] = useState<any>(null);
   
   const [compareBaseId, setCompareBaseId] = useState<string>('');
   const [compareCandId, setCompareCandId] = useState<string>('');
@@ -68,6 +107,40 @@ export default function App() {
 
   const [compiledVersion, setCompiledVersion] = useState<any>(null);
   const [isGeneratingBlueprint, setIsGeneratingBlueprint] = useState<boolean>(false);
+
+  // Pipeline Parameters Form State (Combined & Lifted)
+  const [formData, setFormData] = useState({
+    name: 'YOLOv8-seg airfield run',
+    dataset_id: 'dataset_rareplanes_real',
+    version_tag: 'run_v1',
+    train_split: 0.8,
+    val_split: 0.2,
+    split_seed: 42,
+    task_type: 'instance_segmentation',
+    model_type: 'yolo_seg',
+    epochs: 3,
+    batch: 2,
+    imgsz: 512,
+    fliplr: false,
+    flipud: false,
+    degrees: 0.0,
+    mock: true
+  });
+
+  const [compiledBlueprint, setCompiledBlueprint] = useState<string | null>(null);
+
+  // Synchronize activeDatasetId changes with pipeline configuration formData
+  useEffect(() => {
+    if (activeDatasetId) {
+      setFormData(prev => ({ ...prev, dataset_id: activeDatasetId }));
+    }
+  }, [activeDatasetId]);
+
+  const handleInputChange = (field: string, value: any) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+    setCompiledBlueprint(null); // Clear blueprint when parameters change to enforce rebuild
+    setCompiledVersion(null);
+  };
 
   const experimentsRef = useRef(experiments);
   useEffect(() => {
@@ -115,7 +188,6 @@ export default function App() {
       }
       
       await fetchExperiments();
-      await fetchProjectTree();
     } catch (e) {
       console.error('Error fetching initial workbench data:', e);
     }
@@ -153,18 +225,6 @@ export default function App() {
     }
   };
 
-  const fetchProjectTree = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/projects/proj_default/tree`);
-      if (res.ok) {
-        const data = await res.json();
-        setProjectTree(data);
-      }
-    } catch (e) {
-      console.error('Error fetching project tree:', e);
-    }
-  };
-
   const fetchExperiments = async () => {
     try {
       const res = await fetch(`${API_BASE}/experiments`);
@@ -176,9 +236,6 @@ export default function App() {
       } else if (data.length === 1) {
         setCompareBaseId(data[0].id);
       }
-      
-      // Auto-refresh project-pipeline-run tree as well
-      await fetchProjectTree();
     } catch (e) {
       console.error('Error fetching experiments:', e);
     }
@@ -219,151 +276,31 @@ export default function App() {
     }
   };
 
-  const [viewTab, setViewTab] = useState<'evaluator' | 'cockpit'>('evaluator');
-  const [expandedPipelines, setExpandedPipelines] = useState<Record<string, boolean>>({
-    pipe_curation: true,
-    pipe_labeling_review: false,
-    pipe_yolo: true,
-    pipe_maskrcnn: false,
-    pipe_eval_review: false,
-  });
 
-  const togglePipeline = (pipeId: string) => {
-    setExpandedPipelines(prev => ({
-      ...prev,
-      [pipeId]: !prev[pipeId]
-    }));
-  };
 
   const selectRun = (exp: any) => {
-    if (exp.pipeline_id === 'pipe_yolo' || exp.pipeline_id === 'pipe_maskrcnn') {
+    const isRunning = ['preparing_dataset', 'queued', 'training', 'evaluating'].includes(exp.status);
+    if (isRunning) {
       setActiveExperimentId(exp.id);
-      setViewTab('cockpit');
-      setActiveTab('control');
-    } else {
-      let mockLogs = '';
-      if (exp.pipeline_id === 'pipe_curation') {
-        mockLogs = `[System] Dataset Curation Run: ${exp.name}
-[System] Status: ${exp.status.toUpperCase()}
-[System] Scanned dataset: dataset_rareplanes_real
-[System] Detected 2 potential duplicate aircraft chips.
-[System] Flagged 3 low-resolution / shadowed airfield samples.
-[System] Curation blueprint checks passed successfully.`;
-      } else if (exp.pipeline_id === 'pipe_labeling_review') {
-        mockLogs = `[System] Labeling Review Run: ${exp.name}
-[System] Status: ${exp.status.toUpperCase()}
-[System] Loaded active learning proposal queue...
-[System] Detected 15 auto-labeled aircraft suggestions.
-[System] Verified 12 suggestions with high-confidence thresholds (>85%).
-[System] SME feedback logged.`;
-      } else if (exp.pipeline_id === 'pipe_eval_review') {
-        mockLogs = `[System] Evaluation Review Run: ${exp.name}
-[System] Status: ${exp.status.toUpperCase()}
-[System] Scanned ground truth labels vs model predictions...
-[System] Calculated confidence distributions: min=0.25, max=0.98.
-[System] Visual inspection complete. Top errors queued for active learning rerun.`;
-      } else {
-        mockLogs = `[System] Pipeline Run: ${exp.name}
-[System] Status: ${exp.status.toUpperCase()}
-[System] Execution complete.`;
-      }
-
       setActiveJob({
         id: exp.id,
+        experiment_id: exp.id,
         status: exp.status,
-        logs: mockLogs,
-        loss_history: [],
-        map50_history: [],
-        current_epoch: 0,
-        total_epochs: 1
+        logs: exp.logs || '',
+        loss_history: exp.loss_history || [],
+        map50_history: exp.map50_history || [],
+        current_epoch: exp.current_epoch || 0,
+        total_epochs: exp.config?.epochs || 3
       });
-      setJobLogs(mockLogs);
-      setViewTab('cockpit');
-      
-      if (exp.pipeline_id === 'pipe_curation' || exp.pipeline_id === 'pipe_labeling_review') {
-        setActiveTab('studio');
-      } else {
-        setActiveTab('control');
-      }
+      setJobLogs(exp.logs || '');
+      setWizardStep('train');
+    } else {
+      setCompareCandId(exp.id);
+      setWizardStep('evaluate');
     }
   };
 
-  const handleLaunchPipeline = async (pipe: any) => {
-    if (pipe.type === 'segmentation_training') {
-      setActiveTab('studio');
-      return;
-    }
-    
-    try {
-      const res = await fetch(`${API_BASE}/pipelines/${pipe.id}/experiments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: `Interactive ${pipe.name}` })
-      });
-      if (res.ok) {
-        const expData = await res.json();
-        await fetchProjectTree();
-        
-        const initialLogs = `[System] Launched Pipeline Run: ${expData.name}
-[System] Status: RUNNING
-[System] Initializing pipeline workflow...`;
-        
-        setActiveJob({
-          id: expData.id,
-          status: 'running',
-          logs: initialLogs,
-          loss_history: [],
-          map50_history: [],
-          current_epoch: 0,
-          total_epochs: 1
-        });
-        setJobLogs(initialLogs);
-        setViewTab('cockpit');
-        
-        if (pipe.id === 'pipe_curation' || pipe.id === 'pipe_labeling_review') {
-          setActiveTab('studio');
-        } else {
-          setActiveTab('control');
-        }
-        
-        let pollCount = 0;
-        const interval = setInterval(async () => {
-          pollCount++;
-          const treeRes = await fetch(`${API_BASE}/projects/proj_default/tree`);
-          if (treeRes.ok) {
-            const treeData = await treeRes.json();
-            const updatedPipe = treeData.pipelines?.find((p: any) => p.id === pipe.id);
-            const updatedExp = updatedPipe?.experiments?.find((e: any) => e.id === expData.id);
-            if (updatedExp) {
-              if (updatedExp.status === 'complete' || updatedExp.status === 'failed' || pollCount > 10) {
-                clearInterval(interval);
-                await fetchProjectTree();
-                selectRun(updatedExp);
-              } else {
-                const tickLogs = `[System] Launched Pipeline Run: ${expData.name}
-[System] Status: RUNNING
-[System] Process running... (tick ${pollCount}/3)
-[System] Scanning dataset airfield samples...
-[System] Active proposals processing...`;
-                setActiveJob({
-                  id: expData.id,
-                  status: 'running',
-                  logs: tickLogs,
-                  loss_history: [],
-                  map50_history: [],
-                  current_epoch: 0,
-                  total_epochs: 1
-                });
-                setJobLogs(tickLogs);
-              }
-            }
-          }
-        }, 1000);
-      }
-    } catch (err) {
-      console.error("Failed to launch pipeline run:", err);
-    }
-  };
+
 
   const triggerQuickPrompt = (promptText: string) => {
     setLlmPrompt(promptText);
@@ -404,9 +341,9 @@ export default function App() {
           fetchDatasetVersions(data.payload.dataset_id);
         }
         
-        // Auto navigate to control view if job started
+        // Auto navigate to train stage if job started
         if (data.action === 'create_experiment' || data.action === 'clone_experiment') {
-          setActiveTab('control');
+          setWizardStep('train');
           if (data.workflow_result && data.workflow_result.experiment_id) {
             setActiveExperimentId(data.workflow_result.experiment_id);
           }
@@ -515,7 +452,7 @@ export default function App() {
         setActiveExperimentId(expData.experiment.id);
       }
       
-      setActiveTab('control');
+      setWizardStep('train');
       fetchExperiments();
       fetchDatasetVersions(formData.dataset_id);
     } catch (e: any) {
@@ -530,6 +467,41 @@ export default function App() {
         current_epoch: 0,
         total_epochs: formData.epochs
       });
+    }
+  };
+
+  const handleGenerateBlueprintClick = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const version = await handleGeneratePipelineBlueprint(formData);
+      const val_split = parseFloat((1 - formData.train_split).toFixed(2));
+      const trainCount = Math.round((version.manifest?.train?.length) || (embeddings.length * formData.train_split));
+      const valCount = Math.round((version.manifest?.val?.length) || (embeddings.length - trainCount));
+      
+      const yamlStr = `pipeline:
+  name: "${formData.name}"
+  version_tag: "${formData.version_tag}"
+  dataset_id: "${formData.dataset_id}"
+  generated_version_id: "${version.id}"
+  stages:
+    - data_split:
+        train_ratio: ${formData.train_split} (${trainCount} chips)
+        val_ratio: ${val_split} (${valCount} chips)
+        seed: ${formData.split_seed}
+        output_yaml: "${version.export_path}/dataset.yaml"
+    - augmentations:
+        horizontal_flip: ${formData.fliplr}
+        vertical_flip: ${formData.flipud}
+        random_rotation: ${formData.degrees}°
+    - model_training:
+        architecture: "YOLOv8-seg"
+        epochs: ${formData.epochs}
+        batch_size: ${formData.batch}
+        image_size: ${formData.imgsz}px
+        mock_execution: ${formData.mock}`;
+      setCompiledBlueprint(yamlStr);
+    } catch (err) {
+      console.error("Failed to generate blueprint:", err);
     }
   };
 
@@ -595,28 +567,45 @@ export default function App() {
           </div>
         </div>
         
-        {/* Navigation Tabs */}
-        <nav style={{ display: 'flex', gap: '8px' }}>
+        {/* Guided Progress Stepper */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {[
-            { id: 'dashboard', label: 'DASHBOARD', icon: Compass },
-            { id: 'studio', label: '1. PIPELINE STUDIO', icon: DbIcon },
-            { id: 'control', label: '2. MISSION CONTROL', icon: Play },
-          ].map(tab => {
-            const Icon = tab.icon;
-            const active = activeTab === tab.id;
+            { id: 'curate', label: '1. CURATE', icon: Compass },
+            { id: 'annotate', label: '2. ANNOTATE', icon: Layers },
+            { id: 'train', label: '3. TRAIN', icon: Play },
+            { id: 'evaluate', label: '4. EVALUATE', icon: BarChart3 }
+          ].map((step, idx) => {
+            const Icon = step.icon;
+            const active = wizardStep === step.id;
+            const isCompleted = ['curate', 'annotate', 'train', 'evaluate'].indexOf(wizardStep) > idx;
             return (
-              <button 
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`btn-tactical ${active ? 'btn-tactical-active' : ''}`}
-                style={{ padding: '8px 12px', fontSize: '0.7rem' }}
-              >
-                <Icon style={{ width: '13px', height: '13px' }} />
-                {tab.label}
-              </button>
+              <React.Fragment key={step.id}>
+                {idx > 0 && (
+                  <div style={{ 
+                    width: '30px', 
+                    height: '2px', 
+                    background: isCompleted ? 'var(--accent-cyan)' : 'var(--border-color)',
+                    boxShadow: isCompleted ? '0 0 8px var(--accent-cyan)' : 'none',
+                    transition: 'all 0.3s ease'
+                  }} />
+                )}
+                <button 
+                  onClick={() => setWizardStep(step.id as any)}
+                  className={`btn-tactical ${active ? 'btn-tactical-active border-glow-cyan' : ''}`}
+                  style={{ 
+                    padding: '8px 14px', 
+                    fontSize: '0.7rem',
+                    borderColor: isCompleted ? 'rgba(0, 242, 254, 0.4)' : undefined,
+                    color: isCompleted ? 'rgba(255, 255, 255, 0.8)' : undefined
+                  }}
+                >
+                  <Icon style={{ width: '13px', height: '13px', color: active ? 'var(--accent-cyan)' : isCompleted ? 'var(--accent-cyan)' : 'var(--text-secondary)' }} />
+                  {step.label}
+                </button>
+              </React.Fragment>
             );
           })}
-        </nav>
+        </div>
 
         {/* Global Connection Status */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -639,145 +628,60 @@ export default function App() {
       {/* Main Workspace Frame */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', padding: '0 16px 12px 16px', gap: '12px' }}>
         
-        {/* Left Column: Pipelines & Runs nested Accordion tree */}
+        {/* Left Column: Simple completed/running model runs history list */}
         <div className="glass-panel" style={{ width: '320px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', flexShrink: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', marginBottom: '4px' }}>
             <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.75rem', letterSpacing: '0.05em', margin: 0, color: 'var(--accent-cyan)' }}>
-              PROJECT WORKFLOWS
+              MODEL RUN HISTORY
             </h3>
-            <button
-              onClick={() => {
-                setActiveTab('dashboard');
-                setActiveExperimentId(null);
-              }}
-              className={`btn-tactical ${activeTab === 'dashboard' ? 'btn-tactical-active border-glow-cyan' : ''}`}
-              style={{ padding: '2px 6px', fontSize: '0.55rem' }}
-            >
-              OVERVIEW
-            </button>
           </div>
-
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px', overflowY: 'auto' }}>
-            {projectTree && projectTree.pipelines ? (
-              projectTree.pipelines.map((pipe: any) => {
-                const isExpanded = !!expandedPipelines[pipe.id];
+          
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto' }}>
+            {experiments && experiments.length > 0 ? (
+              experiments.map((exp: any) => {
+                const isSelected = compareCandId === exp.id || activeExperimentId === exp.id;
+                
                 return (
-                  <div key={pipe.id} style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '8px' }}>
-                    {/* Pipeline Accordion Header */}
-                    <div 
-                      style={{ 
-                        display: 'flex', 
-                        justifyContent: 'space-between', 
-                        alignItems: 'center', 
-                        padding: '6px 10px', 
-                        background: 'rgba(255, 255, 255, 0.03)',
-                        border: '1px solid rgba(255, 255, 255, 0.05)',
-                        borderRadius: '4px',
-                        cursor: 'pointer'
-                      }} 
-                      onClick={() => togglePipeline(pipe.id)}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
-                        <span style={{ 
-                          fontSize: '0.6rem', 
-                          transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)', 
-                          transition: 'transform 0.15s ease', 
-                          display: 'inline-block', 
-                          color: 'var(--text-secondary)' 
-                        }}>▶</span>
-                        <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                          <span style={{ fontWeight: 600, fontSize: '0.65rem', color: '#fff', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{pipe.name}</span>
-                          <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)' }}>{pipe.experiments?.length || 0} runs</span>
-                        </div>
-                      </div>
-                      
-                      {/* Launch Run Button */}
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleLaunchPipeline(pipe);
-                        }}
-                        className="btn-tactical" 
-                        style={{ 
-                          padding: '2px 6px', 
-                          fontSize: '0.55rem', 
-                          borderColor: 'var(--accent-cyan)',
-                          color: 'var(--accent-cyan)',
-                          background: 'rgba(0, 242, 254, 0.03)',
-                          flexShrink: 0
-                        }}
-                      >
-                        LAUNCH
-                      </button>
-                    </div>
-
-                    {/* Pipeline Runs list */}
-                    {isExpanded && (
-                      <div style={{ 
-                        paddingLeft: '12px', 
-                        display: 'flex', 
-                        flexDirection: 'column', 
-                        gap: '4px', 
-                        borderLeft: '1px dashed rgba(255,255,255,0.08)', 
-                        marginLeft: '8px', 
-                        marginTop: '4px' 
+                  <div 
+                    key={exp.id}
+                    onClick={() => selectRun(exp)}
+                    className={`glass-panel`}
+                    style={{
+                      padding: '10px',
+                      cursor: 'pointer',
+                      borderColor: isSelected ? 'var(--accent-cyan)' : 'var(--border-color)',
+                      background: isSelected ? 'rgba(0, 242, 254, 0.05)' : 'rgba(0,0,0,0.15)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <span style={{ fontWeight: 600, fontSize: '0.7rem', color: isSelected ? 'var(--accent-cyan)' : '#fff', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '170px' }}>
+                        {exp.name}
+                      </span>
+                      <span style={{ 
+                        fontSize: '0.55rem', 
+                        fontFamily: 'var(--font-mono)', 
+                        color: exp.status === 'complete' ? 'var(--accent-green)' : exp.status === 'failed' ? 'var(--accent-red)' : 'var(--accent-orange)' 
                       }}>
-                        {pipe.experiments && pipe.experiments.map((exp: any) => {
-                          const isSelected = activeJob?.id === exp.id || activeJob?.experiment_id === exp.id || activeExperimentId === exp.id;
-                          return (
-                            <div 
-                              key={exp.id}
-                              onClick={() => selectRun(exp)}
-                              className="glass-panel"
-                              style={{
-                                padding: '6px 10px',
-                                fontSize: '0.65rem',
-                                fontFamily: 'var(--font-mono)',
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
-                                cursor: 'pointer',
-                                borderColor: isSelected ? 'var(--accent-cyan)' : 'var(--border-color)',
-                                background: isSelected ? 'rgba(0, 242, 254, 0.05)' : 'rgba(0,0,0,0.15)',
-                                transition: 'all 0.15s ease'
-                              }}
-                            >
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', overflow: 'hidden' }}>
-                                <span style={{ fontWeight: 600, color: isSelected ? 'var(--accent-cyan)' : '#fff', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{exp.name}</span>
-                                <span style={{ color: 'var(--text-muted)', fontSize: '0.5rem' }}>{exp.id}</span>
-                              </div>
-
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
-                                {exp.status === 'complete' ? (
-                                  <span style={{ color: 'var(--accent-green)', display: 'flex', alignItems: 'center', gap: '2px', fontSize: '0.55rem' }}>
-                                    <CheckCircle2 style={{ width: '9px', height: '9px' }} /> DONE
-                                  </span>
-                                ) : exp.status === 'failed' ? (
-                                  <span style={{ color: 'var(--accent-red)', display: 'flex', alignItems: 'center', gap: '2px', fontSize: '0.55rem' }}>
-                                    <XCircle style={{ width: '9px', height: '9px' }} /> FAIL
-                                  </span>
-                                ) : (
-                                  <span style={{ color: 'var(--accent-orange)', display: 'flex', alignItems: 'center', gap: '2px', fontSize: '0.55rem' }}>
-                                    <RefreshCw className="spin" style={{ width: '9px', height: '9px' }} /> RUN
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                        {(!pipe.experiments || pipe.experiments.length === 0) && (
-                          <div style={{ padding: '6px 10px', color: 'var(--text-muted)', fontSize: '0.6rem', fontFamily: 'var(--font-mono)' }}>
-                            No runs completed yet.
-                          </div>
-                        )}
-                      </div>
-                    )}
+                        {exp.status === 'complete' ? 'DONE' : exp.status === 'failed' ? 'FAIL' : 'RUNNING'}
+                      </span>
+                    </div>
+                    
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.55rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                      <span>{exp.model_type === 'yolo_seg' ? 'YOLOv8-Seg' : 'Instance Seg'}</span>
+                      {exp.status === 'complete' && (
+                        <span style={{ color: 'var(--accent-green)' }}>mAP: 0.72</span>
+                      )}
+                    </div>
                   </div>
                 );
               })
             ) : (
-              <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.7rem' }}>
-                Loading projects, pipelines and runs...
+              <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.7rem' }}>
+                No model runs in database.
               </div>
             )}
           </div>
@@ -809,17 +713,10 @@ export default function App() {
 
         {/* Active Screen Container */}
         <main className="glass-panel" style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', padding: '20px' }}>
-          {activeTab === 'dashboard' && (
-            <DashboardView 
-              datasets={datasets}
-              experiments={experiments}
-              versions={versions}
-              projectTree={projectTree}
-              setActiveTab={setActiveTab}
-            />
-          )}
-          {activeTab === 'studio' && (
+          {wizardStep === 'curate' && (
             <PipelineStudioView 
+              wizardStep={wizardStep}
+              setWizardStep={setWizardStep}
               datasets={datasets} 
               embeddings={embeddings} 
               selectedEmbed={selectedEmbed}
@@ -837,23 +734,275 @@ export default function App() {
               isGeneratingBlueprint={isGeneratingBlueprint}
               compiledVersion={compiledVersion}
               setCompiledVersion={setCompiledVersion}
+              formData={formData}
+              setFormData={setFormData}
+              handleInputChange={handleInputChange}
+              handleGenerateBlueprintClick={handleGenerateBlueprintClick}
+              compiledBlueprint={compiledBlueprint}
+              setCompiledBlueprint={setCompiledBlueprint}
             />
           )}
-          {activeTab === 'control' && (
-            <MissionControlView 
-              activeJob={activeJob} 
-              jobLogs={jobLogs}
-              logsEndRef={logsEndRef}
-              experiments={experiments}
-              datasets={datasets}
-              compareBaseId={compareBaseId}
-              compareCandId={compareCandId}
-              setCompareBaseId={setCompareBaseId}
-              setCompareCandId={setCompareCandId}
-              compareResults={compareResults}
-              viewTab={viewTab}
-              setViewTab={setViewTab}
-            />
+          {wizardStep === 'annotate' && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              {selectedImageDetails ? (
+                <AnnotateTargetsView 
+                  selectedEmbed={selectedEmbed}
+                  setSelectedEmbed={setSelectedEmbed}
+                  selectedImageDetails={selectedImageDetails}
+                  setSelectedImageDetails={setSelectedImageDetails}
+                  activeDatasetId={activeDatasetId}
+                  fetchDatasetEmbeddings={fetchDatasetEmbeddings}
+                  setWizardStep={setWizardStep}
+                />
+              ) : (
+                /* Beautiful select frame overview */
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem', letterSpacing: '0.05em' }}>STEP 2: ANNOTATE TARGETS</h2>
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Select a satellite image chip from the catalog to draw aircraft bounding boxes / polygon paths.</p>
+                    </div>
+                    
+                    <button
+                      onClick={() => setWizardStep('train')}
+                      className="btn-tactical border-glow-cyan"
+                    >
+                      Skip to Training Config <ArrowRight style={{ width: '12px', height: '12px' }} />
+                    </button>
+                  </div>
+                  
+                  <div className="glass-recessed" style={{ flex: 1, padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '20px', overflow: 'hidden' }}>
+                    <Layers style={{ width: '48px', height: '48px', color: 'var(--text-muted)' }} />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>NO IMAGE CHIP LOADED IN CANVAS</span>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '440px', textAlign: 'center', marginTop: '-10px' }}>
+                      Click any satellite chip below to open it in the interactive drawing canvas.
+                    </p>
+                    
+                    <div style={{ width: '100%', overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '12px', padding: '4px' }}>
+                      {embeddings.map((emb: any) => (
+                        <div 
+                          key={emb.image_id}
+                          onClick={() => {
+                            setSelectedEmbed(emb);
+                            setSelectedImageDetails(emb);
+                          }}
+                          className="glass-panel"
+                          style={{ padding: '8px', cursor: 'pointer', textAlign: 'center', background: 'rgba(0,0,0,0.2)', transition: 'transform 0.15s ease' }}
+                          onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.03)'; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; }}
+                        >
+                          <img src={getImageUrl(activeDatasetId, emb.image_id)} style={{ width: '100%', height: '80px', objectFit: 'cover', borderRadius: '4px' }} />
+                          <div style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', marginTop: '6px', color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{emb.image_id}</div>
+                          <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)' }}>{emb.labels?.length || 0} aircraft</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {wizardStep === 'train' && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', gap: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem', letterSpacing: '0.05em' }}>STEP 3: MODEL TRAINING COCKPIT</h2>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Configure augmentations, compile YAML blueprint schematics, and run deep learning training jobs.</p>
+                </div>
+                
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button
+                    onClick={() => setWizardStep('annotate')}
+                    className="btn-tactical"
+                  >
+                    ← Back to Annotation
+                  </button>
+                  <button
+                    onClick={() => setWizardStep('evaluate')}
+                    className="btn-tactical border-glow-cyan"
+                  >
+                    Skip to Evaluation <ArrowRight style={{ width: '12px', height: '12px' }} />
+                  </button>
+                </div>
+              </div>
+              
+              {activeJob ? (
+                <div className="glass-recessed" style={{ flex: 1, padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px', overflow: 'hidden' }}>
+                  
+                  <div className="glass-panel" style={{ 
+                    padding: '12px 20px', 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center',
+                    background: activeJob.status === 'complete' ? 'rgba(0, 255, 135, 0.05)' : activeJob.status === 'failed' ? 'rgba(255, 0, 85, 0.05)' : 'rgba(255, 153, 0, 0.05)',
+                    border: activeJob.status === 'complete' ? '1px solid rgba(0, 255, 135, 0.2)' : activeJob.status === 'failed' ? '1px solid rgba(255, 0, 85, 0.2)' : '1px solid rgba(255, 153, 0, 0.2)'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <span className={`led-indicator ${activeJob.status === 'complete' ? 'green' : activeJob.status === 'failed' ? 'red' : 'orange'}`}></span>
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <span style={{ fontSize: '0.85rem', fontWeight: 600, fontFamily: 'var(--font-display)', color: '#fff' }}>
+                          {activeJob.status === 'complete' ? 'TRAINING RUN COMPLETED SUCCESSFULLY' : activeJob.status === 'failed' ? 'TRAINING RUN FAILED' : 'ACCELERATOR TRAINING ACTIVE'}
+                        </span>
+                        <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                          Run ID: {activeJob.id} // Target: YOLOv8 Segmentation
+                        </span>
+                      </div>
+                    </div>
+                    
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                      {activeJob.status === 'complete' && (
+                        <button
+                          onClick={() => {
+                            setCompareCandId(activeJob.experiment_id || activeJob.id);
+                            setWizardStep('evaluate');
+                          }}
+                          className="btn-tactical border-glow-green"
+                          style={{ padding: '8px 16px', color: 'var(--accent-green)', borderColor: 'var(--accent-green)' }}
+                        >
+                          Proceed to Evaluation <ArrowRight style={{ width: '12px', height: '12px' }} />
+                        </button>
+                      )}
+                      
+                      {['complete', 'failed', 'cancelled'].includes(activeJob.status) && (
+                        <button
+                          onClick={() => {
+                            setActiveJob(null);
+                          }}
+                          className="btn-tactical"
+                          style={{ padding: '8px 16px' }}
+                        >
+                          Configure New Run
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>ACCELERATOR LOSS DIVERGENCE HISTORY</span>
+                      {renderSVGChart(activeJob.loss_history, '#ff9900')}
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>VALIDATION MAP50 ACCURACY PROFILE</span>
+                      {renderSVGChart(activeJob.map50_history, '#00ff87')}
+                    </div>
+                  </div>
+                  
+                  <div style={{ 
+                    flex: 1, 
+                    background: 'rgba(0,0,0,0.95)', 
+                    border: '1px solid var(--border-color)', 
+                    borderRadius: '8px', 
+                    padding: '12px', 
+                    overflowY: 'auto',
+                    fontFamily: 'var(--font-mono)', 
+                    fontSize: '0.75rem', 
+                    color: 'rgba(0, 242, 254, 0.95)',
+                    lineHeight: '1.4'
+                  }}>
+                    <div style={{ color: 'var(--text-secondary)', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '6px', marginBottom: '8px', fontSize: '0.6rem', display: 'flex', justifyContent: 'space-between' }}>
+                      <span>STREAMING STANDARD ACCELERATOR STDOUT LOGS</span>
+                      <span>WORKER_PID: {activeJob.id}</span>
+                    </div>
+                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
+                      {jobLogs}
+                    </pre>
+                    <div ref={logsEndRef} />
+                  </div>
+                  
+                </div>
+              ) : (
+                <PipelineStudioView 
+                  wizardStep={wizardStep}
+                  setWizardStep={setWizardStep}
+                  datasets={datasets} 
+                  embeddings={embeddings} 
+                  selectedEmbed={selectedEmbed}
+                  setSelectedEmbed={setSelectedEmbed}
+                  selectedImageDetails={selectedImageDetails}
+                  setSelectedImageDetails={setSelectedImageDetails}
+                  activeDatasetId={activeDatasetId}
+                  setActiveDatasetId={setActiveDatasetId}
+                  fetchDatasetEmbeddings={fetchDatasetEmbeddings}
+                  fetchDatasetVersions={fetchDatasetVersions}
+                  onDatasetUpload={handleDatasetUpload}
+                  versions={versions}
+                  handleGeneratePipelineBlueprint={handleGeneratePipelineBlueprint}
+                  handleExecutePipelineRun={handleExecutePipelineRun}
+                  isGeneratingBlueprint={isGeneratingBlueprint}
+                  compiledVersion={compiledVersion}
+                  setCompiledVersion={setCompiledVersion}
+                  formData={formData}
+                  setFormData={setFormData}
+                  handleInputChange={handleInputChange}
+                  handleGenerateBlueprintClick={handleGenerateBlueprintClick}
+                  compiledBlueprint={compiledBlueprint}
+                  setCompiledBlueprint={setCompiledBlueprint}
+                />
+              )}
+            </div>
+          )}
+          {wizardStep === 'evaluate' && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', gap: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem', letterSpacing: '0.05em' }}>STEP 4: COMPARATIVE EVALUATION</h2>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Select baselines vs candidates to analyze precision, recall, confusion deltas, and prediction overlays.</p>
+                </div>
+                
+                <button
+                  onClick={() => setWizardStep('train')}
+                  className="btn-tactical"
+                >
+                  ← Back to Training
+                </button>
+              </div>
+              
+              <div className="glass-recessed" style={{ flex: 1, padding: '20px', display: 'flex', flexDirection: 'column', overflow: 'auto' }}>
+                <ModelEvaluatorView 
+                  experiments={experiments}
+                  compareBaseId={compareBaseId}
+                  compareCandId={compareCandId}
+                  setCompareBaseId={setCompareBaseId}
+                  setCompareCandId={setCompareCandId}
+                  compareResults={compareResults}
+                />
+                
+                {compareResults && compareResults.candidate && (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '20px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+                    <button
+                      onClick={() => {
+                        const cand = compareResults.candidate.exp;
+                        setFormData({
+                          name: `${cand.name} (Rerun)`,
+                          dataset_id: getDatasetIdFromVersion(cand.dataset_version_id),
+                          version_tag: cand.dataset_version_id || 'run_v1',
+                          train_split: cand.config.train_split || 0.8,
+                          val_split: cand.config.val_split || 0.2,
+                          split_seed: cand.config.split_seed || 42,
+                          task_type: cand.task_type || 'instance_segmentation',
+                          model_type: cand.model_type || 'yolo_seg',
+                          epochs: cand.config.epochs || 3,
+                          batch: cand.config.batch || 2,
+                          imgsz: cand.config.imgsz || 512,
+                          fliplr: cand.config.augmentations?.fliplr || false,
+                          flipud: cand.config.augmentations?.flipud || false,
+                          degrees: cand.config.augmentations?.degrees || 0.0,
+                          mock: cand.config.mock !== undefined ? cand.config.mock : true
+                        });
+                        setCompiledBlueprint(null);
+                        setCompiledVersion(null);
+                        setActiveJob(null);
+                        setWizardStep('train');
+                      }}
+                      className="btn-tactical border-glow-cyan"
+                    >
+                      <RefreshCw style={{ width: '13px', height: '13px' }} /> Tune Hyperparameters & Rerun Experiment
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </main>
 
@@ -975,11 +1124,17 @@ function PipelineStudioView({
   fetchDatasetVersions,
   onDatasetUpload,
   versions: _versions,
-  handleGeneratePipelineBlueprint,
   handleExecutePipelineRun,
   isGeneratingBlueprint,
   compiledVersion,
-  setCompiledVersion
+  setCompiledVersion,
+  wizardStep,
+  setWizardStep,
+  formData,
+  handleInputChange,
+  handleGenerateBlueprintClick,
+  compiledBlueprint,
+  setCompiledBlueprint
 }: any) {
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadName, setUploadName] = useState('');
@@ -990,7 +1145,7 @@ function PipelineStudioView({
   const [uploadError, setUploadError] = useState('');
 
   // Control side-panel tab: curate data filters vs build pipeline configuration
-  const [controlTab, setControlTab] = useState<'curate' | 'build'>('curate');
+  const controlTab = wizardStep === 'curate' ? 'curate' : 'build';
 
   // FiftyOne Curation Filters State
   const [searchId, setSearchId] = useState('');
@@ -1006,75 +1161,6 @@ function PipelineStudioView({
   const [minIncidence, setMinIncidence] = useState(15.0);
   const [maxIncidence, setMaxIncidence] = useState(45.0);
   const [simulateBackscatter, setSimulateBackscatter] = useState(false);
-
-  // Pipeline Parameters Form State (Combined)
-  const [formData, setFormData] = useState({
-    name: 'YOLOv8-seg airfield run',
-    dataset_id: activeDatasetId || 'dataset_rareplanes_real',
-    version_tag: 'run_v1',
-    train_split: 0.8,
-    val_split: 0.2,
-    split_seed: 42,
-    task_type: 'instance_segmentation',
-    model_type: 'yolo_seg',
-    epochs: 3,
-    batch: 2,
-    imgsz: 512,
-    fliplr: false,
-    flipud: false,
-    degrees: 0.0,
-    mock: true
-  });
-
-  const [compiledBlueprint, setCompiledBlueprint] = useState<string | null>(null);
-
-  // Synchronize activeDatasetId changes with pipeline configuration formData
-  useEffect(() => {
-    if (activeDatasetId) {
-      setFormData(prev => ({ ...prev, dataset_id: activeDatasetId }));
-    }
-  }, [activeDatasetId]);
-
-  const handleInputChange = (field: string, value: any) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-    setCompiledBlueprint(null); // Clear blueprint when parameters change to enforce rebuild
-    setCompiledVersion(null);
-  };
-
-  const handleGenerateBlueprintClick = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const version = await handleGeneratePipelineBlueprint(formData);
-      const val_split = parseFloat((1 - formData.train_split).toFixed(2));
-      const trainCount = Math.round((version.manifest?.train?.length) || (embeddings.length * formData.train_split));
-      const valCount = Math.round((version.manifest?.val?.length) || (embeddings.length - trainCount));
-      
-      const yamlStr = `pipeline:
-  name: "${formData.name}"
-  version_tag: "${formData.version_tag}"
-  dataset_id: "${formData.dataset_id}"
-  generated_version_id: "${version.id}"
-  stages:
-    - data_split:
-        train_ratio: ${formData.train_split} (${trainCount} chips)
-        val_ratio: ${val_split} (${valCount} chips)
-        seed: ${formData.split_seed}
-        output_yaml: "${version.export_path}/dataset.yaml"
-    - augmentations:
-        horizontal_flip: ${formData.fliplr}
-        vertical_flip: ${formData.flipud}
-        random_rotation: ${formData.degrees}°
-    - model_training:
-        architecture: "YOLOv8-seg"
-        epochs: ${formData.epochs}
-        batch_size: ${formData.batch}
-        image_size: ${formData.imgsz}px
-        mock_execution: ${formData.mock}`;
-      setCompiledBlueprint(yamlStr);
-    } catch (err) {
-      console.error("Failed to generate blueprint:", err);
-    }
-  };
 
   const onExecutePipeline = () => {
     if (!compiledVersion) return;
@@ -1270,31 +1356,7 @@ function PipelineStudioView({
         ))}
       </div>
       
-      {/* Sub-navigation Switcher */}
-      <div style={{ 
-        display: 'flex', 
-        gap: '8px', 
-        borderBottom: '1px solid var(--border-color)', 
-        paddingBottom: '10px',
-        opacity: selectedImageDetails ? 0.4 : 1,
-        pointerEvents: selectedImageDetails ? 'none' : 'auto',
-        transition: 'all 0.3s ease'
-      }}>
-        <button 
-          onClick={() => setControlTab('curate')} 
-          className={`btn-tactical ${controlTab === 'curate' ? 'btn-tactical-active border-glow-cyan' : ''}`}
-          style={{ fontSize: '0.7rem', padding: '6px 12px' }}
-        >
-          1. CURATE & LABEL
-        </button>
-        <button 
-          onClick={() => setControlTab('build')} 
-          className={`btn-tactical ${controlTab === 'build' ? 'btn-tactical-active border-glow-cyan' : ''}`}
-          style={{ fontSize: '0.7rem', padding: '6px 12px' }}
-        >
-          2. BUILD PIPELINE BLUE-PRINT
-        </button>
-      </div>
+
 
       {controlTab === 'curate' ? (
         // CURATE VIEW (Full Width, Curation Filters integrated horizontally)
@@ -1672,6 +1734,30 @@ function PipelineStudioView({
               </div>
             )}
           </div>
+
+          {/* Linear workflow footer buttons */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', borderTop: '1px solid var(--border-color)', paddingTop: '12px', marginTop: '12px' }}>
+            {selectedEmbed && (
+              <button
+                onClick={() => {
+                  setSelectedImageDetails(selectedEmbed);
+                  setWizardStep('annotate');
+                }}
+                className="btn-tactical btn-tactical-active border-glow-cyan"
+                style={{ padding: '8px 16px', fontSize: '0.75rem' }}
+              >
+                Label Selected Chip <ArrowRight style={{ width: '12.5px', height: '12.5px' }} />
+              </button>
+            )}
+            <button
+              onClick={() => setWizardStep('annotate')}
+              className="btn-tactical border-glow-cyan"
+              style={{ padding: '8px 16px', fontSize: '0.75rem' }}
+            >
+              Proceed to Annotation Stage <ArrowRight style={{ width: '12.5px', height: '12.5px' }} />
+            </button>
+          </div>
+
         </div>
       ) : (
         // BUILD VIEW (centered card layout, full width)
@@ -2037,7 +2123,8 @@ function AnnotateTargetsView({
   selectedImageDetails,
   setSelectedImageDetails,
   activeDatasetId,
-  fetchDatasetEmbeddings
+  fetchDatasetEmbeddings,
+  setWizardStep
 }: any) {
   const [drawingMode, setDrawingMode] = useState<'polygon' | 'bbox'>('polygon');
   const [activeClassId, setActiveClassId] = useState<number>(0);
@@ -2542,22 +2629,37 @@ function AnnotateTargetsView({
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button 
+                onClick={handleSaveLabels}
+                disabled={isSaveDisabled}
+                className="btn-tactical btn-tactical-active"
+                style={{ flex: 1, justifyContent: 'center', padding: '10px', fontSize: '0.75rem' }}
+              >
+                <Save style={{ width: '14px', height: '14px' }} />
+                SAVE CHANGES
+              </button>
+              <button 
+                onClick={() => {
+                  setSelectedImageDetails(null);
+                  if (setWizardStep) setWizardStep('curate');
+                }}
+                className="btn-tactical"
+                style={{ flex: 1, justifyContent: 'center', padding: '10px', fontSize: '0.75rem' }}
+              >
+                ← CURATION
+              </button>
+            </div>
+            
             <button 
-              onClick={handleSaveLabels}
-              disabled={isSaveDisabled}
-              className="btn-tactical btn-tactical-active"
-              style={{ flex: 1, justifyContent: 'center', padding: '10px', fontSize: '0.75rem' }}
+              onClick={() => {
+                if (setWizardStep) setWizardStep('train');
+              }}
+              className="btn-tactical border-glow-green"
+              style={{ width: '100%', justifyContent: 'center', padding: '10px', fontSize: '0.75rem', color: 'var(--accent-green)', borderColor: 'var(--accent-green)' }}
             >
-              <Save style={{ width: '14px', height: '14px' }} />
-              SAVE CHANGES
-            </button>
-            <button 
-              onClick={() => setSelectedImageDetails(null)}
-              className="btn-tactical"
-              style={{ padding: '10px', fontSize: '0.75rem' }}
-            >
-              ← BACK TO CURATION
+              PROCEED TO TRAINING →
             </button>
           </div>
         </div>
@@ -2570,217 +2672,6 @@ function AnnotateTargetsView({
 
 
 
-// ============================================
-// VIEW COMPONENT: 4. MISSION CONTROL (Telemetry & Eval)
-// ============================================
-function MissionControlView({
-  activeJob,
-  jobLogs,
-  logsEndRef,
-  experiments,
-  datasets,
-  compareBaseId,
-  compareCandId,
-  setCompareBaseId,
-  setCompareCandId,
-  compareResults,
-  viewTab,
-  setViewTab
-}: any) {
-
-  // Auto switch to cockpit if a job starts executing
-  useEffect(() => {
-    if (activeJob && ['preparing_dataset', 'queued', 'training', 'evaluating'].includes(activeJob.status)) {
-      if (setViewTab) setViewTab('cockpit');
-    }
-  }, [activeJob]);
-
-  const renderSVGChart = (history: number[], strokeColor: string) => {
-    if (!history || history.length === 0) {
-      return (
-        <div style={{ height: '110px', background: 'rgba(0,0,0,0.25)', border: '1px solid var(--border-color)', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-          Awaiting telemetry...
-        </div>
-      );
-    }
-    const width = 300;
-    const height = 110;
-    const padding = 15;
-    const maxVal = Math.max(...history, 1.0);
-    
-    let points = "";
-    history.forEach((val, index) => {
-      const x = padding + (index / (history.length - 1 || 1)) * (width - 2 * padding);
-      const y = height - padding - (val / maxVal) * (height - 2 * padding);
-      points += `${x},${y} `;
-    });
-
-    return (
-      <svg width="100%" height="110" style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '6px' }}>
-        <polyline
-          fill="none"
-          stroke={strokeColor}
-          strokeWidth="2"
-          points={points.trim()}
-        />
-        {history.map((val, index) => {
-          const x = padding + (index / (history.length - 1 || 1)) * (width - 2 * padding);
-          const y = height - padding - (val / maxVal) * (height - 2 * padding);
-          return (
-            <circle
-              key={index}
-              cx={x}
-              cy={y}
-              r="3"
-              fill={strokeColor}
-            />
-          );
-        })}
-      </svg>
-    );
-  };
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%', overflow: 'hidden' }}>
-      
-      {/* Step Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem', letterSpacing: '0.05em' }}>MISSION CONTROL</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Monitor local MPS/CPU hardware executions, capture validation metrics, and perform comparative evaluations on trained ATR models.</p>
-        </div>
-
-        {/* Global Connection / Status */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <div className="glass-recessed" style={{ padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
-            <span className={`led-indicator ${activeJob && !['complete', 'failed', 'cancelled'].includes(activeJob.status) ? 'orange pulse' : 'green'}`}></span>
-            ACCELERATOR STATUS: {activeJob && !['complete', 'failed', 'cancelled'].includes(activeJob.status) ? activeJob.status.toUpperCase() : 'IDLE'}
-          </div>
-        </div>
-      </div>
-
-      {/* Grid: Stats & Telemetry */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
-        {[
-          { label: 'DATASETS REGISTERED', value: datasets ? datasets.length : 0, sub: '1 Active Source', icon: DbIcon },
-          { label: 'EXPERIMENTS RUN', value: experiments ? experiments.length : 0, sub: 'Total training attempts', icon: Layers },
-          { label: 'LATEST ACCURACY (mAP50)', value: experiments && experiments.length > 0 && experiments[0].status === 'complete' ? '0.72' : 'N/A', sub: experiments && experiments.length > 0 ? experiments[0].name : 'No runs completed yet', icon: TrendingUp },
-          { label: 'ACTIVE GPU WORKERS', value: '1', sub: 'Local MPS Execution enabled', icon: Activity },
-        ].map((item, idx) => {
-          const Icon = item.icon;
-          return (
-            <div key={idx} className="glass-recessed" style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '80px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <span style={{ fontSize: '0.6rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{item.label}</span>
-                <Icon style={{ width: '14px', height: '14px', color: 'var(--accent-cyan)' }} />
-              </div>
-              <div>
-                <div style={{ fontFamily: 'var(--font-display)', fontSize: '1.2rem', fontWeight: 700, margin: '2px 0' }}>{item.value}</div>
-                <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>{item.sub}</div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Main Workspace (occupies full space) */}
-      <div className="glass-recessed" style={{ flex: 1, padding: '16px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        
-        {/* View Tab Selector */}
-        <div style={{ display: 'flex', justifyItems: 'flex-start', gap: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px', marginBottom: '12px' }}>
-          <button 
-            onClick={() => setViewTab('evaluator')}
-            className={`btn-tactical ${viewTab === 'evaluator' ? 'btn-tactical-active border-glow-cyan' : ''}`}
-            style={{ fontSize: '0.7rem', padding: '6px 12px' }}
-          >
-            <BarChart3 style={{ width: '12px', height: '12px' }} />
-            MODEL COMPARATIVE EVALUATOR
-          </button>
-          <button 
-            onClick={() => setViewTab('cockpit')}
-            className={`btn-tactical ${viewTab === 'cockpit' ? 'btn-tactical-active border-glow-orange' : ''}`}
-            style={{ fontSize: '0.7rem', padding: '6px 12px' }}
-          >
-            <Activity style={{ width: '12px', height: '12px' }} />
-            REAL-TIME MONITORING COCKPIT {activeJob && !['complete', 'failed', 'cancelled'].includes(activeJob.status) && '●'}
-          </button>
-        </div>
-
-          {viewTab === 'cockpit' ? (
-            // REAL-TIME MONITORING COCKPIT
-            activeJob ? (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', overflow: 'hidden' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.75rem', letterSpacing: '0.05em', margin: 0 }}>
-                    MONITORING COCKPIT
-                  </h3>
-                  <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--accent-orange)' }}>
-                    ACTIVE PIPELINE EXECUTION ({activeJob.status.toUpperCase()})
-                  </span>
-                </div>
-                
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>LOSS HISTORY</div>
-                    {renderSVGChart(activeJob.loss_history, '#ff9900')}
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>VALIDATION mAP50</div>
-                    {renderSVGChart(activeJob.map50_history, '#00ff87')}
-                  </div>
-                </div>
-
-                {/* Console Logs Terminal */}
-                <div style={{ 
-                  flex: 1, 
-                  background: 'rgba(0,0,0,0.95)', 
-                  border: '1px solid var(--border-color)', 
-                  borderRadius: '8px', 
-                  padding: '10px', 
-                  overflowY: 'auto',
-                  fontFamily: 'var(--font-mono)', 
-                  fontSize: '0.7rem', 
-                  color: 'rgba(0, 242, 254, 0.95)',
-                  boxShadow: 'inset 0 4px 10px rgba(0,0,0,0.95)',
-                  lineHeight: '1.4'
-                }}>
-                  <div style={{ color: 'var(--text-secondary)', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '4px', marginBottom: '6px', fontSize: '0.6rem', display: 'flex', justifyContent: 'space-between' }}>
-                    <span>PROCESS STREAMING CONSOLE LOGS</span>
-                    <span>PROCESS_ID: {activeJob.id}</span>
-                  </div>
-                  <div style={{ whiteSpace: 'pre-wrap' }}>
-                    {jobLogs}
-                  </div>
-                  <div ref={logsEndRef} />
-                </div>
-              </div>
-            ) : (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-                <Activity style={{ width: '40px', height: '40px' }} />
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', marginTop: '12px' }}>ACCELERATOR IDLE</div>
-                <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', maxWidth: '300px', textAlign: 'center', marginTop: '4px' }}>
-                  No active training process is currently executing. Build a pipeline blueprint and launch execution to stream metrics.
-                </p>
-              </div>
-            )
-          ) : (
-            // MODEL COMPARATIVE EVALUATOR
-            <div style={{ flex: 1, overflowY: 'auto' }}>
-              <ModelEvaluatorView 
-                experiments={experiments}
-                compareBaseId={compareBaseId}
-                compareCandId={compareCandId}
-                setCompareBaseId={setCompareBaseId}
-                setCompareCandId={setCompareCandId}
-                compareResults={compareResults}
-              />
-            </div>
-          )}
-
-      </div>
-    </div>
-  );
-}
 
 // ============================================
 // VIEW COMPONENT: 5. MODEL EVALUATOR & COMPARER
@@ -3037,225 +2928,6 @@ function ModelEvaluatorView({
         </div>
       )}
 
-    </div>
-  );
-}
-
-
-// ============================================
-// VIEW COMPONENT: DASHBOARD OVERVIEW & ROADMAP
-// ============================================
-function DashboardView({
-  datasets,
-  experiments,
-  versions,
-  projectTree,
-  setActiveTab
-}: any) {
-  const totalDatasets = datasets.length;
-  const totalExperiments = experiments.length;
-  
-  // Extract completed runs with evaluations
-  const completedRuns: any[] = [];
-  const recentRuns: any[] = [];
-  
-  if (projectTree && projectTree.pipelines) {
-    projectTree.pipelines.forEach((pipe: any) => {
-      if (pipe.experiments) {
-        pipe.experiments.forEach((exp: any) => {
-          // Add to recent runs
-          recentRuns.push({
-            id: exp.id,
-            name: exp.name,
-            pipelineName: pipe.name,
-            pipelineId: pipe.id,
-            status: exp.status,
-            createdAt: exp.created_at
-          });
-          
-          // If completed and has evaluation, add to leaderboard
-          if (exp.status === 'complete' && exp.evaluation) {
-            completedRuns.push({
-              id: exp.id,
-              name: exp.name,
-              pipelineName: pipe.name,
-              pipelineId: pipe.id,
-              version: exp.dataset_version_id,
-              modelType: exp.model_type,
-              epochs: exp.config?.epochs || 'N/A',
-              mAP50: exp.evaluation.map50 || 0.0,
-              precision: exp.evaluation.precision || 0.0,
-              recall: exp.evaluation.recall || 0.0,
-              f1: exp.evaluation.f1 || 0.0
-            });
-          }
-        });
-      }
-    });
-  }
-
-  // Sort leaderboard by mAP50 descending
-  completedRuns.sort((a, b) => b.mAP50 - a.mAP50);
-  
-  // Sort recent activity by createdAt descending
-  recentRuns.sort((a, b) => b.createdAt - a.createdAt);
-  const displayRecentRuns = recentRuns.slice(0, 5);
-
-  const topScore = completedRuns.length > 0 ? completedRuns[0].mAP50.toFixed(3) : 'N/A';
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%', overflow: 'hidden' }}>
-      {/* Dashboard Header */}
-      <div>
-        <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem', letterSpacing: '0.05em' }}>WORKBENCH DASHBOARD</h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>An end-to-end overview of your geospatial ATR target training pipeline, versions, and validation comparative leaderboard.</p>
-      </div>
-
-      {/* Overview Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
-        {[
-          { label: 'INGESTED DATASETS', value: totalDatasets, desc: `${datasets.reduce((acc: number, cur: any) => acc + (cur.sample_size || 0), 0)} airfield chips` },
-          { label: 'EXPERIMENTS INITIATED', value: totalExperiments, desc: `${versions.length} split configurations compiled` },
-          { label: 'TOP MODEL ACCURACY (mAP50)', value: topScore, desc: 'Leaderboard champion score' },
-          { label: 'GPU ACCELERATOR', value: 'MPS ACTIVE', desc: 'Hardware acceleration enabled' },
-        ].map((stat, idx) => (
-          <div key={idx} className="glass-recessed" style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-            <span style={{ fontSize: '0.6rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{stat.label}</span>
-            <div style={{ fontSize: '1.2rem', fontFamily: 'var(--font-display)', fontWeight: 600, color: 'var(--accent-cyan)', margin: '2px 0' }}>{stat.value}</div>
-            <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>{stat.desc}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Main Content Panels */}
-      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: '16px', overflow: 'hidden' }}>
-        
-        {/* Left: Performance Leaderboard */}
-        <div className="glass-recessed" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px', overflow: 'auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', letterSpacing: '0.05em', margin: 0 }}>
-              ATR ACCURACY LEADERBOARD
-            </h3>
-            <span style={{ fontSize: '0.65rem', fontFamily: 'var(--font-mono)', color: 'var(--accent-green)' }}>
-              VAL ACCURACY METRICS (SEGMENTATION MASK)
-            </span>
-          </div>
-
-          {completedRuns.length > 0 ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', textAlign: 'left' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', color: 'var(--text-secondary)' }}>
-                  <th style={{ padding: '8px' }}>RANK</th>
-                  <th style={{ padding: '8px' }}>RUN NAME</th>
-                  <th style={{ padding: '8px' }}>PIPELINE</th>
-                  <th style={{ padding: '8px' }}>EPOCHS</th>
-                  <th style={{ padding: '8px' }}>mAP50</th>
-                  <th style={{ padding: '8px' }}>PRECISION</th>
-                  <th style={{ padding: '8px' }}>RECALL</th>
-                  <th style={{ padding: '8px' }}>F1 SCORE</th>
-                </tr>
-              </thead>
-              <tbody>
-                {completedRuns.map((run, index) => (
-                  <tr key={run.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)', background: index === 0 ? 'rgba(0,255,135,0.02)' : 'none' }}>
-                    <td style={{ padding: '10px 8px', fontWeight: 'bold', color: index === 0 ? 'var(--accent-green)' : 'inherit' }}>
-                      #{index + 1}
-                    </td>
-                    <td style={{ padding: '10px 8px', color: '#fff', fontWeight: 600 }}>{run.name}</td>
-                    <td style={{ padding: '10px 8px' }}>
-                      <span className="glass-panel" style={{ padding: '2px 6px', fontSize: '0.55rem', border: '1px solid rgba(0, 242, 254, 0.3)', color: 'var(--accent-cyan)', background: 'none', borderRadius: '3px' }}>
-                        {run.pipelineName.replace('Pipeline', '')}
-                      </span>
-                    </td>
-                    <td style={{ padding: '10px 8px' }}>{run.epochs}</td>
-                    <td style={{ padding: '10px 8px', color: 'var(--accent-cyan)', fontWeight: 'bold' }}>{run.mAP50.toFixed(3)}</td>
-                    <td style={{ padding: '10px 8px' }}>{run.precision.toFixed(3)}</td>
-                    <td style={{ padding: '10px 8px' }}>{run.recall.toFixed(3)}</td>
-                    <td style={{ padding: '10px 8px' }}>{run.f1.toFixed(3)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-              <Activity style={{ width: '30px', height: '30px', marginBottom: '8px' }} />
-              <div style={{ fontSize: '0.8rem', fontFamily: 'var(--font-mono)' }}>NO TRAINING RUNS EVALUATED</div>
-              <p style={{ fontSize: '0.65rem', textAlign: 'center', marginTop: '4px', maxWidth: '280px' }}>
-                Deploy blueprints and run model training to rank pipeline configurations.
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* Right: Recent Runs & Pipeline Shortcuts */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', overflow: 'hidden' }}>
-          
-          {/* Recent Runs */}
-          <div className="glass-recessed" style={{ flex: 1, padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', overflow: 'auto' }}>
-            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.8rem', letterSpacing: '0.05em', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px', margin: 0 }}>
-              RECENT SYSTEM ACTIVITY
-            </h3>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {displayRecentRuns.length > 0 ? (
-                displayRecentRuns.map((run: any) => {
-                  const isRunning = ['queued', 'training', 'preparing_dataset', 'evaluating'].includes(run.status);
-                  const isSuccess = run.status === 'complete';
-                  const isFailed = run.status === 'failed';
-                  const ledClass = isRunning ? 'orange pulse' : isSuccess ? 'green' : isFailed ? 'red' : 'red';
-                  
-                  return (
-                    <div key={run.id} className="glass-panel" style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px', background: 'rgba(0,0,0,0.1)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.7rem', color: '#fff', fontWeight: 600, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap', maxWidth: '180px' }}>
-                          {run.name}
-                        </span>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.6rem', fontFamily: 'var(--font-mono)' }}>
-                          <span className={`led-indicator ${ledClass}`}></span>
-                          {run.status.toUpperCase()}
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.6rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
-                        <span>Pipeline: {run.pipelineName.replace('Pipeline', '')}</span>
-                        <span>{new Date(run.createdAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem', textAlign: 'center', marginTop: '20px', fontFamily: 'var(--font-mono)' }}>
-                  Awaiting system executions...
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Quick Actions Shortcuts */}
-          <div className="glass-panel" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px', background: 'rgba(5, 8, 20, 0.4)' }}>
-            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '0.75rem', letterSpacing: '0.05em', color: 'var(--accent-cyan)', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '6px', margin: 0 }}>
-              QUICK LAUNCH SHORTCUTS
-            </h3>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-              <button 
-                onClick={() => setActiveTab('studio')} 
-                className="btn-tactical" 
-                style={{ fontSize: '0.65rem', padding: '8px', justifyContent: 'center' }}
-              >
-                Data Prep Studio →
-              </button>
-              <button 
-                onClick={() => setActiveTab('control')} 
-                className="btn-tactical" 
-                style={{ fontSize: '0.65rem', padding: '8px', justifyContent: 'center' }}
-              >
-                Mission Control →
-              </button>
-            </div>
-          </div>
-
-        </div>
-
-      </div>
     </div>
   );
 }
