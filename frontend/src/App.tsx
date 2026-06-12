@@ -124,6 +124,7 @@ export default function App() {
   const [datasetToDelete, setDatasetToDelete] = useState<any>(null);
   const [cancelJobConfirm, setCancelJobConfirm] = useState<any>(null);
   const [experimentToDelete, setExperimentToDelete] = useState<any>(null);
+  const [clearLlmHistoryConfirm, setClearLlmHistoryConfirm] = useState<boolean>(false);
 
   // Pipeline Parameters Form State (Combined & Lifted)
   const [formData, setFormData] = useState({
@@ -517,7 +518,6 @@ export default function App() {
   };
 
   const handleClearLlmHistory = async () => {
-    if (!window.confirm("Are you sure you want to clear LLM command history from the database?")) return;
     try {
       const res = await fetch(`${API_BASE}/projects/proj_default/llm-commands`, { method: 'DELETE' });
       if (res.ok) {
@@ -1446,7 +1446,7 @@ export default function App() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <button 
-                  onClick={handleClearLlmHistory}
+                  onClick={() => setClearLlmHistoryConfirm(true)}
                   style={{
                     background: 'none',
                     border: 'none',
@@ -1670,6 +1670,57 @@ export default function App() {
                 style={{ background: 'var(--accent-red)', borderColor: 'var(--accent-red)', color: '#fff' }}
               >
                 DELETE RECORD
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Clear LLM History Modal */}
+      {clearLlmHistoryConfirm && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          background: 'rgba(4, 6, 15, 0.85)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1100
+        }}>
+          <div className="glass-panel border-glow-red" style={{ width: '450px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid var(--accent-red)' }}>
+            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', letterSpacing: '0.05em', borderBottom: '1px solid rgba(255, 0, 85, 0.2)', paddingBottom: '8px', color: 'var(--accent-red)', margin: 0 }}>
+              CONFIRM CLEAR LLM HISTORY
+            </h3>
+            
+            <p style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: '#fff', margin: 0, lineHeight: '1.5' }}>
+              Are you sure you want to permanently clear the LLM command and orchestration history from the database?
+            </p>
+            <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.4' }}>
+              This will reset your terminal logs to the initial system greeting and remove all saved agent prompt histories.
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+              <button 
+                type="button" 
+                onClick={() => setClearLlmHistoryConfirm(false)}
+                className="btn-tactical"
+              >
+                CANCEL
+              </button>
+              <button 
+                type="button" 
+                onClick={() => {
+                  handleClearLlmHistory();
+                  setClearLlmHistoryConfirm(false);
+                }}
+                className="btn-tactical btn-tactical-active"
+                style={{ background: 'var(--accent-red)', borderColor: 'var(--accent-red)', color: '#fff' }}
+              >
+                CLEAR CHAT HISTORY
               </button>
             </div>
           </div>
