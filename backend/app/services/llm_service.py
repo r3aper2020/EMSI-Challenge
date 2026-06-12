@@ -103,8 +103,24 @@ TOOLS_DECLARATIONS = [
             },
             "required": ["dataset_id", "image_id"]
         }
+    },
+    {
+        "name": "get_dataset_stats",
+        "description": "Retrieves detailed statistics, label/class distributions, counts of labeled/unlabeled images, and sensor types for a specific dataset.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "dataset_id": {"type": "STRING", "description": "The dataset ID (e.g. 'dataset_rareplanes_real')."}
+            }
+        }
     }
 ]
+
+def deterministic_hash(s: str) -> int:
+    h = 0
+    for char in s:
+        h = (h * 31 + ord(char)) & 0xFFFFFFFF
+    return h
 
 def get_dataset_id_from_version(version_id: str) -> str:
     if not version_id:
@@ -270,6 +286,71 @@ class LLMService:
                             result = self.db.get_evaluation_by_experiment(args.get("experiment_id"))
                         elif name == "run_auto_label":
                             result = {"status": "mock", "message": "Proposals generated."}
+                        elif name == "get_dataset_stats":
+                            dataset_id = args.get("dataset_id")
+                            if not dataset_id:
+                                datasets = self.db.get_datasets()
+                                dataset_id = datasets[0]["id"] if datasets else "dataset_rareplanes_real"
+                            
+                            embeddings = self.db.get_embeddings_by_dataset(dataset_id)
+                            ds = self.db.get_dataset(dataset_id)
+                            labels_dir = None
+                            if ds and ds.get("folder_path"):
+                                labels_dir = os.path.join(ds["folder_path"], "labels")
+                            
+                            total_images = len(embeddings)
+                            labeled_count = 0
+                            unlabeled_count = 0
+                            optical_count = 0
+                            sar_count = 0
+                            class_distribution = {0: 0, 1: 0, 2: 0, 3: 0}
+                            
+                            for emb in embeddings:
+                                image_id = emb["image_id"]
+                                h_val = deterministic_hash(image_id)
+                                if h_val % 2 == 0:
+                                    sar_count += 1
+                                else:
+                                    optical_count += 1
+                                    
+                                has_label = False
+                                if labels_dir and os.path.exists(labels_dir):
+                                    label_file = os.path.join(labels_dir, f"{image_id}.txt")
+                                    if os.path.exists(label_file) and os.path.getsize(label_file) > 0:
+                                        has_label = True
+                                        try:
+                                            with open(label_file, "r") as lf:
+                                                for line in lf:
+                                                    tokens = line.strip().split()
+                                                    if tokens:
+                                                        class_id = int(tokens[0])
+                                                        if class_id in class_distribution:
+                                                            class_distribution[class_id] += 1
+                                        except:
+                                            pass
+                                
+                                if has_label:
+                                    labeled_count += 1
+                                else:
+                                    unlabeled_count += 1
+                                    
+                            result = {
+                                "dataset_id": dataset_id,
+                                "dataset_name": ds["name"] if ds else dataset_id,
+                                "total_images": total_images,
+                                "labeled_images": labeled_count,
+                                "unlabeled_images": unlabeled_count,
+                                "sensor_distribution": {
+                                    "Optical": optical_count,
+                                    "SAR": sar_count
+                                },
+                                "class_distribution": {
+                                    "Small Aircraft (Class 0)": class_distribution.get(0, 0),
+                                    "Cargo Plane (Class 1)": class_distribution.get(1, 0),
+                                    "Large Aircraft (Class 2)": class_distribution.get(2, 0),
+                                    "Helicopter (Class 3)": class_distribution.get(3, 0)
+                                }
+                            }
                         else:
                             result = {"error": f"Tool '{name}' not executed."}
                     except Exception as e:
@@ -320,6 +401,76 @@ class LLMService:
             else:
                 ds_list = [f"• {d['name']} ({d['sample_size']} chips, ID: {d['id']})" for d in datasets]
                 text = "Here are the registered datasets in the database:\n" + "\n".join(ds_list)
+            return {
+                "action": "chat",
+                "message": text,
+                "payload": {}
+            }
+
+        # 1.5. Labeled / Unlabeled / Image Statistics / Sensor distribution / Class distribution queries
+        if any(kw in p_lower for kw in ["how many images", "total images", "labeled", "unlabeled", "statistics", "stats", "class distribution", "image count", "how many planes"]):
+            datasets = self.db.get_datasets()
+            if not datasets:
+                text = "We currently have no registered datasets in the workbench database."
+            else:
+                dataset_id = datasets[0]["id"]
+                ds = datasets[0]
+                embeddings = self.db.get_embeddings_by_dataset(dataset_id)
+                
+                labels_dir = None
+                if ds and ds.get("folder_path"):
+                    labels_dir = os.path.join(ds["folder_path"], "labels")
+                
+                total_images = len(embeddings)
+                labeled_count = 0
+                unlabeled_count = 0
+                optical_count = 0
+                sar_count = 0
+                class_distribution = {0: 0, 1: 0, 2: 0, 3: 0}
+                
+                for emb in embeddings:
+                    image_id = emb["image_id"]
+                    h_val = deterministic_hash(image_id)
+                    if h_val % 2 == 0:
+                        sar_count += 1
+                    else:
+                        optical_count += 1
+                        
+                    has_label = False
+                    if labels_dir and os.path.exists(labels_dir):
+                        label_file = os.path.join(labels_dir, f"{image_id}.txt")
+                        if os.path.exists(label_file) and os.path.getsize(label_file) > 0:
+                            has_label = True
+                            try:
+                                with open(label_file, "r") as lf:
+                                    for line in lf:
+                                        tokens = line.strip().split()
+                                        if tokens:
+                                            class_id = int(tokens[0])
+                                            if class_id in class_distribution:
+                                                class_distribution[class_id] += 1
+                            except:
+                                pass
+                    if has_label:
+                        labeled_count += 1
+                    else:
+                        unlabeled_count += 1
+                        
+                text = (
+                    f"Dataset statistics for **{ds['name']}**:\n\n"
+                    f"• **Total Images**: {total_images}\n"
+                    f"• **Labeled Images**: {labeled_count} ({(labeled_count/total_images*100) if total_images else 0:.1f}%)\n"
+                    f"• **Unlabeled Images**: {unlabeled_count} ({(unlabeled_count/total_images*100) if total_images else 0:.1f}%)\n\n"
+                    f"**Sensor Distribution**:\n"
+                    f"• Optical (WorldView-3): {optical_count} images\n"
+                    f"• Space-based Radar (SAR): {sar_count} images\n\n"
+                    f"**Target Class Distribution**:\n"
+                    f"• Small Aircraft (Class 0): {class_distribution[0]} instances\n"
+                    f"• Cargo Plane (Class 1): {class_distribution[1]} instances\n"
+                    f"• Large Aircraft (Class 2): {class_distribution[2]} instances\n"
+                    f"• Helicopter (Class 3): {class_distribution[3]} instances"
+                )
+                
             return {
                 "action": "chat",
                 "message": text,

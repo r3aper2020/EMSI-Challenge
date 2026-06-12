@@ -105,24 +105,14 @@ Upon launching, the workbench presents a global view of your workspace:
 
 ---
 
-### 2. Step 1: Curation & Embeddings Workspace
-A side-by-side view that combines catalog inspection with spatial visual embeddings.
+### 2. Step 1: Dataset Curation Workspace
+A comprehensive view that lists and details geospatial satellite image chips.
 
-![Curation and Embeddings PCA Selector Workspace](./docs/screenshots/curate_lasso.png)
-*Figure 1: Side-by-side curation view showing the PCA Embeddings Map (right) and filtered Image Grid (left).*
-
-#### Interactive PCA Embedding Map
-* Renders a 2D projection of image features.
-* Every dot represents an image, colored by its **Scene Type** (e.g., *Airfield*, *Runway*, *Hangar*, *Apron*, *Terminal*).
-* A visual **color legend** clarifies the dot mappings.
-
-#### SVG Lasso Curation & Image Grid Filtering
-* **Lasso Selection**: Click and drag your mouse over any group of dots on the PCA Embedding Map to draw a selection polygon.
-* **Automatic Grid Filtering**: The image grid on the left immediately filters to show *only* the images contained within your lassoed region.
-* **Reset**: Click the **Reset Curation** button to clear the lasso polygon and restore the full image list.
+![Curation Workspace](./docs/screenshots/curate_lasso.png)
+*Figure 1: Dataset curation workspace displaying the WorldView Image Grid and details panel.*
 
 #### Image Inspection
-* **Single Click**: Updates the metadata details panel in the sidebar with target counts, scene classification, aspect ratio, and bounding box dimensions.
+* **Single Click**: Updates the metadata details panel in the sidebar with target counts, sensor configurations, resolution (GSD), site codes, bounds footprints, Euclidean PCA nearest-neighbor similarity vectors, and anomaly outlier scores.
 * **Double Click or "Zoom Chip"**: Open a full-screen high-resolution viewer modal to closely inspect targets.
 
 ![High Resolution Zoom View](./docs/screenshots/zoom_modal.png)

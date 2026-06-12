@@ -347,9 +347,7 @@ export default function App() {
       const res = await fetch(`${API_BASE}/datasets/${dsId}/embeddings`);
       const data = await res.json();
       setEmbeddings(data);
-      if (data.length > 0) {
-        setSelectedEmbed(data[0]);
-      }
+      setSelectedEmbed(null);
     } catch (e) {
       console.error('Error fetching embeddings:', e);
     }
@@ -1051,6 +1049,7 @@ export default function App() {
                   activeDatasetId={activeDatasetId}
                   fetchDatasetEmbeddings={fetchDatasetEmbeddings}
                   setWizardStep={setWizardStep}
+                  embeddings={embeddings}
                 />
               ) : (
                 /* Beautiful select frame overview */
@@ -1895,98 +1894,7 @@ function PipelineStudioView({
   const [minTargets, setMinTargets] = useState(0);
   const [hoveredCardIdx, setHoveredCardIdx] = useState<string | null>(null);
 
-  // Lasso Curation Filtering & Coordinate Mapping State
-  const [lassoPolygon, setLassoPolygon] = useState<{ x: number; y: number }[]>([]);
-  const [isLassoing, setIsLassoing] = useState(false);
-  const [lassoedIds, setLassoedIds] = useState<string[]>([]);
-  const svgRef = useRef<SVGSVGElement | null>(null);
-
-  // Point-in-polygon ray casting check
-  const isPointInPolygon = (point: { x: number; y: number }, polygon: { x: number; y: number }[]) => {
-    const x = point.x, y = point.y;
-    let inside = false;
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      const xi = polygon[i].x, yi = polygon[i].y;
-      const xj = polygon[j].x, yj = polygon[j].y;
-      
-      const intersect = ((yi > y) !== (yj > y))
-        && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-      if (intersect) inside = !inside;
-    }
-    return inside;
-  };
-
-  // Mouse handlers for drawing lasso polygon
-  const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (!svgRef.current) return;
-    e.preventDefault(); // Stop text/image drag-selection conflict
-    const rect = svgRef.current.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 400;
-    const y = ((e.clientY - rect.top) / rect.height) * 400;
-    setIsLassoing(true);
-    setLassoPolygon([{ x, y }]);
-  };
-
-  const clearLasso = () => {
-    setLassoPolygon([]);
-    setLassoedIds([]);
-  };
-
-  // Reset lasso state on active dataset change
-  useEffect(() => {
-    setLassoPolygon([]);
-    setIsLassoing(false);
-    setLassoedIds([]);
-  }, [activeDatasetId]);
-
-  // Global mousemove and mouseup listeners when lassoing is active
-  useEffect(() => {
-    if (!isLassoing) return;
-
-    const handleGlobalMouseMove = (e: MouseEvent) => {
-      if (!svgRef.current) return;
-      const rect = svgRef.current.getBoundingClientRect();
-      const x = ((e.clientX - rect.left) / rect.width) * 400;
-      const y = ((e.clientY - rect.top) / rect.height) * 400;
-      
-      const lastPoint = lassoPolygon[lassoPolygon.length - 1];
-      if (!lastPoint || Math.abs(lastPoint.x - x) > 1 || Math.abs(lastPoint.y - y) > 1) {
-        setLassoPolygon(prev => [...prev, { x, y }]);
-      }
-    };
-
-    const handleGlobalMouseUp = () => {
-      setIsLassoing(false);
-      
-      if (lassoPolygon.length > 2) {
-        const insideIds: string[] = [];
-        embeddings.forEach((pt: any) => {
-          const svgX = ((pt.x + 10) / 20) * 360 + 20;
-          const svgY = ((pt.y + 10) / 20) * 360 + 20;
-          if (isPointInPolygon({ x: svgX, y: svgY }, lassoPolygon)) {
-            insideIds.push(pt.image_id);
-          }
-        });
-        
-        if (insideIds.length > 0) {
-          setLassoedIds(insideIds);
-        } else {
-          setLassoedIds([]);
-          setLassoPolygon([]);
-        }
-      } else {
-        setLassoedIds([]);
-        setLassoPolygon([]);
-      }
-    };
-
-    window.addEventListener('mousemove', handleGlobalMouseMove);
-    window.addEventListener('mouseup', handleGlobalMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleGlobalMouseMove);
-      window.removeEventListener('mouseup', handleGlobalMouseUp);
-    };
-  }, [isLassoing, lassoPolygon, embeddings]);
+  // Curation State
 
   // Space-Based Radar (SAR) Curation Parameters
   const [sensorType, setSensorType] = useState('all');
@@ -2022,8 +1930,6 @@ function PipelineStudioView({
       if (inc < minIncidence || inc > maxIncidence) return false;
     }
     
-    // Lasso Curation Filter
-    if (lassoedIds.length > 0 && !lassoedIds.includes(emb.image_id)) return false;
     
     return true;
   });
@@ -2038,44 +1944,15 @@ function PipelineStudioView({
   const valCount = totalChips - trainCount;
 
   const handleCardClick = (emb: any) => {
-    setSelectedEmbed(emb);
+    if (selectedEmbed && selectedEmbed.image_id === emb.image_id) {
+      setSelectedEmbed(null);
+    } else {
+      setSelectedEmbed(emb);
+    }
   };
 
 
-  const renderScatterPlot = () => {
-    if (embeddings.length === 0) return null;
-    return embeddings.map((pt: any) => {
-      const svgX = ((pt.x + 10) / 20) * 360 + 20;
-      const svgY = ((pt.y + 10) / 20) * 360 + 20;
-      
-      const isSelected = selectedEmbed && selectedEmbed.image_id === pt.image_id;
-      const isFilteredOut = !filteredEmbeddings.find((f: any) => f.image_id === pt.image_id);
-      
-      let dotColor = 'rgba(0, 114, 255, 0.7)'; // Default blue
-      const sceneType = pt.metadata?.scene_type;
-      if (sceneType === 'runway_intersection') dotColor = 'rgba(0, 242, 254, 0.8)';
-      if (sceneType === 'taxiway') dotColor = 'rgba(0, 255, 137, 0.8)';
-      if (sceneType === 'cargo_ramp') dotColor = 'rgba(255, 153, 0, 0.8)';
-      
-      return (
-        <circle 
-          key={pt.image_id}
-          cx={svgX}
-          cy={svgY}
-          r={isSelected ? 7 : 4}
-          fill={isSelected ? '#fff' : dotColor}
-          stroke={isSelected ? 'var(--accent-cyan)' : 'none'}
-          strokeWidth={2}
-          opacity={isFilteredOut ? 0.15 : 1}
-          style={{ cursor: 'pointer', transition: 'all 0.15s ease' }}
-          onClick={(e) => {
-            e.stopPropagation();
-            setSelectedEmbed(pt);
-          }}
-        />
-      );
-    });
-  };
+
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%', overflow: 'hidden' }}>
@@ -2316,8 +2193,8 @@ function PipelineStudioView({
 
           </div>
 
-          {/* Main workspace for Grid/Map (100% width) */}
-          <div className="glass-recessed" style={{ flex: 1, padding: '16px', display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '16px', overflow: 'hidden' }}>
+          {/* Main workspace for Grid/Details (100% width) */}
+          <div className="glass-recessed" style={{ flex: 1, padding: '16px', display: 'grid', gridTemplateColumns: '1fr 340px', gap: '16px', overflow: 'hidden' }}>
             
             {/* Left side: FiftyOne Image Grids */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', height: '100%', overflow: 'hidden' }}>
@@ -2349,7 +2226,7 @@ function PipelineStudioView({
                         transition: 'all 0.15s ease'
                       }}
                     >
-                      <div style={{ height: '90px', background: '#000', borderRadius: '6px', overflow: 'hidden', position: 'relative' }}>
+                      <div style={{ width: '100%', aspectRatio: '1/1', background: '#000', borderRadius: '6px', overflow: 'hidden', position: 'relative' }}>
                         <img 
                           src={getImageUrl(activeDatasetId, emb.image_id)} 
                           alt={emb.image_id} 
@@ -2411,94 +2288,15 @@ function PipelineStudioView({
               </div>
             </div>
 
-            {/* Right side: PCA Scatter Plot + Legend + Detail Panel */}
+            {/* Right side: Detail Panel */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', overflow: 'hidden', height: '100%' }}>
-              
-              {/* Upper section: PCA Scatter Plot */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: '0 0 auto', background: 'rgba(0,0,0,0.25)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
-                  <span>PCA EMBEDDINGS DISTRIBUTION (DRAG TO LASSO)</span>
-                  {lassoedIds.length > 0 && (
-                    <span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>LASSO FILTER ACTIVE</span>
-                  )}
-                </div>
-                
-                <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
-                  {/* Scatter Plot Box */}
-                  <div style={{ border: '1px solid var(--border-color)', borderRadius: '8px', background: 'rgba(0,0,0,0.4)', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '220px', height: '220px', userSelect: 'none', overflow: 'hidden' }}>
-                    <svg 
-                      ref={svgRef}
-                      width="220" 
-                      height="220" 
-                      viewBox="0 0 400 400"
-                      onMouseDown={handleMouseDown}
-                      style={{ maxWidth: '100%', maxHeight: '100%', cursor: 'crosshair' }}
-                    >
-                      <line x1="200" y1="10" x2="200" y2="390" stroke="rgba(255,255,255,0.05)" />
-                      <line x1="10" y1="200" x2="390" y2="200" stroke="rgba(255,255,255,0.05)" />
-                      {renderScatterPlot()}
-                      {lassoPolygon.length > 0 && (
-                        <polyline
-                          points={lassoPolygon.map(p => `${p.x},${p.y}`).join(' ')}
-                          fill="rgba(0, 242, 254, 0.08)"
-                          stroke="var(--accent-cyan)"
-                          strokeWidth="3"
-                          strokeDasharray="5 3"
-                        />
-                      )}
-                    </svg>
-                  </div>
-                  
-                  {/* Custom color legend for scene types */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)', flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '4px', marginBottom: '2px', color: 'var(--text-secondary)' }}>SCENE CLASS LEGEND</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'rgba(255, 153, 0, 0.9)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      <span style={{ fontSize: '0.8rem' }}>●</span> Cargo Ramps
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'rgba(0, 242, 254, 0.9)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      <span style={{ fontSize: '0.8rem' }}>●</span> Runway Intersect.
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'rgba(0, 255, 137, 0.9)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      <span style={{ fontSize: '0.8rem' }}>●</span> Taxiways / Aprons
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'rgba(0, 114, 255, 0.8)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      <span style={{ fontSize: '0.8rem' }}>●</span> Other Features
-                    </div>
-                    
-                    {lassoedIds.length > 0 && (
-                      <button
-                        onClick={clearLasso}
-                        className="btn-tactical border-glow-cyan"
-                        style={{ 
-                          marginTop: '8px', 
-                          padding: '4px 8px', 
-                          fontSize: '0.55rem', 
-                          display: 'flex', 
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: '4px', 
-                          width: 'fit-content' 
-                        }}
-                      >
-                        <svg viewBox="0 0 24 24" width="10" height="10" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
-                          <line x1="18" y1="6" x2="6" y2="18"></line>
-                          <line x1="6" y1="6" x2="18" y2="18"></line>
-                        </svg>
-                        CLEAR LASSO ({lassoedIds.length})
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-              
-              {/* Lower section: Selected node card detail panel */}
               <div className="glass-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto', padding: '12px', background: 'rgba(0,0,0,0.15)' }}>
                 <h4 style={{ fontFamily: 'var(--font-display)', fontSize: '0.75rem', color: 'var(--accent-cyan)', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '6px', margin: 0 }}>
                   CHIP METADATA DETAILS
                 </h4>
                 {selectedEmbed ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    <div style={{ height: '140px', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-color)', position: 'relative', flexShrink: 0 }}>
+                    <div style={{ width: '100%', aspectRatio: '1/1', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-color)', position: 'relative', flexShrink: 0 }}>
                       <img 
                         src={getImageUrl(activeDatasetId, selectedEmbed.image_id)} 
                         alt="Selected chip preview"
@@ -2629,8 +2427,81 @@ function PipelineStudioView({
                     </div>
                   </div>
                 ) : (
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem', textAlign: 'center', marginTop: '40px', fontFamily: 'var(--font-mono)' }}>
-                    Select a chip from the grid or dot on the PCA map to analyze coordinates.
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <h4 style={{ fontFamily: 'var(--font-display)', fontSize: '0.75rem', color: 'var(--accent-cyan)', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', paddingBottom: '6px', margin: 0 }}>
+                      GLOBAL DATASET STATISTICS
+                    </h4>
+                    
+                    {(() => {
+                      const total = embeddings.length;
+                      let labeled = 0;
+                      let optical = 0;
+                      let sar = 0;
+                      const classes: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0 };
+                      
+                      embeddings.forEach((e: any) => {
+                        if (e.labels && e.labels.length > 0) labeled++;
+                        if (e.metadata?.sensor_type === 'SAR') sar++;
+                        else optical++;
+                        
+                        if (e.labels) {
+                          e.labels.forEach((l: any) => {
+                            if (l.class_id in classes) classes[l.class_id]++;
+                          });
+                        }
+                      });
+                      
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.65rem', fontFamily: 'var(--font-mono)' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                            <div className="glass-panel" style={{ padding: '8px', background: 'rgba(0,0,0,0.2)' }}>
+                              <div style={{ color: 'var(--text-secondary)', fontSize: '0.55rem' }}>TOTAL CHIPS</div>
+                              <div style={{ color: '#fff', fontSize: '1rem', fontWeight: 600 }}>{total}</div>
+                            </div>
+                            <div className="glass-panel" style={{ padding: '8px', background: 'rgba(0,0,0,0.2)' }}>
+                              <div style={{ color: 'var(--text-secondary)', fontSize: '0.55rem' }}>LABELED CHIPS</div>
+                              <div style={{ color: 'var(--accent-cyan)', fontSize: '1rem', fontWeight: 600 }}>{labeled}</div>
+                            </div>
+                          </div>
+                          
+                          <div className="glass-panel" style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px', background: 'rgba(0,0,0,0.2)' }}>
+                            <div style={{ color: 'var(--text-secondary)', fontSize: '0.55rem', fontWeight: 600 }}>SENSOR DISTRIBUTION</div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                              <span>Optical (WV-3):</span>
+                              <span style={{ color: '#fff', fontWeight: 600 }}>{optical}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                              <span>Space Radar (SAR):</span>
+                              <span style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>{sar}</span>
+                            </div>
+                          </div>
+                          
+                          <div className="glass-panel" style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px', background: 'rgba(0,0,0,0.2)' }}>
+                            <div style={{ color: 'var(--text-secondary)', fontSize: '0.55rem', fontWeight: 600 }}>TARGET CLASS COUNTS</div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#00f2fe' }}>
+                              <span>Small Aircraft:</span>
+                              <span style={{ fontWeight: 600 }}>{classes[0]}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#00ff87' }}>
+                              <span>Cargo Plane:</span>
+                              <span style={{ fontWeight: 600 }}>{classes[1]}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#ff9900' }}>
+                              <span>Large Aircraft:</span>
+                              <span style={{ fontWeight: 600 }}>{classes[2]}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#ff0055' }}>
+                              <span>Helicopter:</span>
+                              <span style={{ fontWeight: 600 }}>{classes[3]}</span>
+                            </div>
+                          </div>
+                          
+                          <div style={{ color: 'var(--text-muted)', fontSize: '0.6rem', textAlign: 'center', marginTop: '10px', lineHeight: '1.4' }}>
+                            Select any satellite chip from the grid on the left to inspect detailed target bounding boxes, resolutions, and nearest embedding vectors.
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
@@ -2917,7 +2788,8 @@ function AnnotateTargetsView({
   setSelectedImageDetails,
   activeDatasetId,
   fetchDatasetEmbeddings,
-  setWizardStep
+  setWizardStep,
+  embeddings = []
 }: any) {
   const [drawingMode, setDrawingMode] = useState<'polygon' | 'bbox'>('polygon');
   const [activeClassId, setActiveClassId] = useState<number>(0);
@@ -2934,6 +2806,43 @@ function AnnotateTargetsView({
   // AI Auto-Labeling Suggestions Queue
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [loadingAutoLabel, setLoadingAutoLabel] = useState(false);
+
+  // Find current index of active image in embeddings
+  const currentIndex = embeddings.findIndex((e: any) => e.image_id === selectedImageDetails.image_id);
+  
+  const filmstripRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll filmstrip when active image changes
+  useEffect(() => {
+    if (filmstripRef.current && currentIndex !== -1) {
+      const activeEl = filmstripRef.current.children[currentIndex] as HTMLElement;
+      if (activeEl) {
+        const container = filmstripRef.current;
+        const scrollLeft = activeEl.offsetLeft - container.offsetWidth / 2 + activeEl.offsetWidth / 2;
+        container.scrollTo({ left: scrollLeft, behavior: 'smooth' });
+      }
+    }
+  }, [currentIndex]);
+  
+  const handleNextImage = async () => {
+    if (currentIndex !== -1 && currentIndex < embeddings.length - 1) {
+      if (JSON.stringify(editLabels) !== JSON.stringify(selectedImageDetails.labels || [])) {
+        await handleSaveLabels();
+      }
+      const nextEmbed = embeddings[currentIndex + 1];
+      setSelectedImageDetails(nextEmbed);
+    }
+  };
+
+  const handlePrevImage = async () => {
+    if (currentIndex !== -1 && currentIndex > 0) {
+      if (JSON.stringify(editLabels) !== JSON.stringify(selectedImageDetails.labels || [])) {
+        await handleSaveLabels();
+      }
+      const prevEmbed = embeddings[currentIndex - 1];
+      setSelectedImageDetails(prevEmbed);
+    }
+  };
 
   useEffect(() => {
     if (selectedImageDetails) {
@@ -2996,17 +2905,30 @@ function AnnotateTargetsView({
   // Keyboard shortcut listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if user is inside a form control
+      if (
+        document.activeElement?.tagName === 'INPUT' ||
+        document.activeElement?.tagName === 'SELECT' ||
+        document.activeElement?.tagName === 'TEXTAREA'
+      ) {
+        return;
+      }
+
       if (e.key === 'Escape') {
         setTempPoints([]);
         setIsDrawingBbox(false);
         setBboxStart(null);
       } else if (e.key === 'Backspace' && tempPoints.length > 0) {
         setTempPoints(prev => prev.slice(0, -1));
+      } else if (e.key === 'ArrowRight' || e.key === ']') {
+        handleNextImage();
+      } else if (e.key === 'ArrowLeft' || e.key === '[') {
+        handlePrevImage();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [tempPoints]);
+  }, [tempPoints, handleNextImage, handlePrevImage]);
 
   const handleCanvasMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -3244,6 +3166,88 @@ function AnnotateTargetsView({
 
             </div>
           </div>
+
+          {/* Filmstrip / Thumbnail Navigation Strip */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+              <span>DATASET IMAGE FILMSTRIP</span>
+              <span>Active: {currentIndex + 1} of {embeddings.length}</span>
+            </div>
+            <div 
+              ref={filmstripRef}
+              style={{ 
+                display: 'flex', 
+                gap: '8px', 
+                overflowX: 'auto', 
+                padding: '4px 2px 6px 2px',
+                scrollBehavior: 'smooth',
+                scrollbarWidth: 'thin',
+                scrollbarColor: 'var(--accent-cyan) rgba(0,0,0,0.2)'
+              }}
+            >
+              {embeddings.map((emb: any, idx: number) => {
+                const isActive = idx === currentIndex;
+                const isLabeled = (emb.labels || []).length > 0;
+                return (
+                  <div
+                    key={emb.image_id}
+                    onClick={async () => {
+                      if (isActive) return;
+                      if (JSON.stringify(editLabels) !== JSON.stringify(selectedImageDetails.labels || [])) {
+                        await handleSaveLabels();
+                      }
+                      setSelectedImageDetails(emb);
+                    }}
+                    style={{
+                      flexShrink: 0,
+                      width: '64px',
+                      cursor: 'pointer',
+                      borderRadius: '4px',
+                      border: isActive ? '2px solid var(--accent-cyan)' : '1px solid rgba(255,255,255,0.1)',
+                      background: isActive ? 'rgba(0, 242, 254, 0.1)' : 'rgba(0,0,0,0.3)',
+                      padding: '3px',
+                      textAlign: 'center',
+                      position: 'relative',
+                      transition: 'all 0.15s ease'
+                    }}
+                    title={`${emb.image_id} (${emb.labels?.length || 0} labels)`}
+                  >
+                    <img 
+                      src={getImageUrl(activeDatasetId, emb.image_id)} 
+                      style={{ 
+                        width: '100%', 
+                        height: '42px', 
+                        objectFit: 'cover', 
+                        borderRadius: '2px',
+                        opacity: isActive ? 1.0 : 0.6
+                      }} 
+                    />
+                    <div style={{ 
+                      fontSize: '0.45rem', 
+                      fontFamily: 'var(--font-mono)', 
+                      marginTop: '2px', 
+                      color: isActive ? '#fff' : 'var(--text-muted)',
+                      overflow: 'hidden', 
+                      textOverflow: 'ellipsis', 
+                      whiteSpace: 'nowrap'
+                    }}>
+                      {emb.image_id.substring(0, 8)}
+                    </div>
+                    {/* Visual indicator tag for annotation status */}
+                    <span style={{
+                      position: 'absolute',
+                      top: '2px',
+                      right: '2px',
+                      width: '6px',
+                      height: '6px',
+                      borderRadius: '50%',
+                      backgroundColor: isLabeled ? 'var(--accent-green)' : 'var(--accent-orange)'
+                    }} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
         {/* Sidebar Controls */}
@@ -3409,6 +3413,8 @@ function AnnotateTargetsView({
             <span>[Esc] - Reset / Cancel active shape</span>
             <span>[Backspace] - Undo last polygon node</span>
             <span>Double Click canvas - Complete polygon</span>
+            <span>[ArrowLeft] / [ [ ] - Previous image</span>
+            <span>[ArrowRight] / [ ] ] - Next image</span>
           </div>
 
           {/* Alert status / save */}
@@ -3423,6 +3429,34 @@ function AnnotateTargetsView({
           )}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {/* Next / Previous Image Navigation Row */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', background: 'rgba(0,0,0,0.1)', border: '1px solid rgba(255,255,255,0.05)', padding: '8px', borderRadius: '6px', marginBottom: '4px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginBottom: '2px' }}>
+                <span>CATALOG NAVIGATION</span>
+                <span>{currentIndex !== -1 ? `${currentIndex + 1} / ${embeddings.length}` : 'N/A'}</span>
+              </div>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button
+                  type="button"
+                  onClick={handlePrevImage}
+                  disabled={currentIndex <= 0}
+                  className="btn-tactical"
+                  style={{ flex: 1, justifyContent: 'center', padding: '6px', fontSize: '0.7rem', opacity: currentIndex <= 0 ? 0.4 : 1 }}
+                >
+                  ← PREV
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNextImage}
+                  disabled={currentIndex === -1 || currentIndex >= embeddings.length - 1}
+                  className="btn-tactical border-glow-cyan"
+                  style={{ flex: 1, justifyContent: 'center', padding: '6px', fontSize: '0.7rem', opacity: (currentIndex === -1 || currentIndex >= embeddings.length - 1) ? 0.4 : 1 }}
+                >
+                  NEXT →
+                </button>
+              </div>
+            </div>
+
             <div style={{ display: 'flex', gap: '8px' }}>
               <button 
                 onClick={handleSaveLabels}
