@@ -18,6 +18,7 @@ dist-ssr/
 backend/data/
 backend/rareplanes_test.zip
 extracted_content.txt
+*.zip
 
 # Databases
 *.db

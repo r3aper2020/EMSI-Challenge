@@ -787,6 +787,12 @@ export default function App() {
     }
   };
 
+  // Clear selected image details when leaving annotation step to prevent greyed out sections in curate view
+  useEffect(() => {
+    if (wizardStep !== 'annotate') {
+      setSelectedImageDetails(null);
+    }
+  }, [wizardStep]);
 
   return (
     <div style={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -1060,12 +1066,35 @@ export default function App() {
                       <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Select a satellite image chip from the catalog to draw aircraft bounding boxes / polygon paths.</p>
                     </div>
                     
-                    <button
-                      onClick={() => setWizardStep('train')}
-                      className="btn-tactical border-glow-cyan"
-                    >
-                      Skip to Training Config <ArrowRight style={{ width: '12px', height: '12px' }} />
-                    </button>
+                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center', fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <label>ACTIVE DATASET SOURCE</label>
+                        <select 
+                          value={activeDatasetId} 
+                          onChange={e => {
+                            const dsId = e.target.value;
+                            setActiveDatasetId(dsId);
+                            fetchDatasetEmbeddings(dsId);
+                            fetchDatasetVersions(dsId);
+                            setCompiledBlueprint(null);
+                            setCompiledVersion(null);
+                          }}
+                          style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '6px 10px', borderRadius: '4px', outline: 'none', width: '220px' }}
+                        >
+                          {datasets && datasets.map((ds: any) => (
+                            <option key={ds.id} value={ds.id}>{ds.name} ({ds.sample_size} chips)</option>
+                          ))}
+                        </select>
+                      </div>
+                      
+                      <button
+                        onClick={() => setWizardStep('train')}
+                        className="btn-tactical border-glow-cyan"
+                        style={{ marginTop: '16px' }}
+                      >
+                        Skip to Training Config <ArrowRight style={{ width: '12px', height: '12px' }} />
+                      </button>
+                    </div>
                   </div>
                   
                   <div className="glass-recessed" style={{ flex: 1, padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '20px', overflow: 'hidden' }}>
@@ -1982,6 +2011,8 @@ function PipelineStudioView({
                   setActiveDatasetId(dsId);
                   fetchDatasetEmbeddings(dsId);
                   fetchDatasetVersions(dsId);
+                  setCompiledBlueprint(null);
+                  setCompiledVersion(null);
                 }}
                 style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '6px 10px', borderRadius: '4px', outline: 'none', width: '220px' }}
               >
@@ -2553,6 +2584,26 @@ function PipelineStudioView({
                     onChange={e => handleInputChange('name', e.target.value)}
                     style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '8px 12px', borderRadius: '4px', outline: 'none' }}
                   />
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label>DATASET SOURCE</label>
+                  <select 
+                    value={activeDatasetId} 
+                    onChange={e => {
+                      const dsId = e.target.value;
+                      setActiveDatasetId(dsId);
+                      fetchDatasetEmbeddings(dsId);
+                      fetchDatasetVersions(dsId);
+                      setCompiledBlueprint(null);
+                      setCompiledVersion(null);
+                    }}
+                    style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', color: '#fff', padding: '8px 12px', borderRadius: '4px', outline: 'none', width: '100%' }}
+                  >
+                    {datasets && datasets.map((ds: any) => (
+                      <option key={ds.id} value={ds.id}>{ds.name} ({ds.sample_size} chips)</option>
+                    ))}
+                  </select>
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>

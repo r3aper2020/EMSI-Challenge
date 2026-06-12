@@ -159,6 +159,7 @@ export default function FiftyOneDashboard() {
   const [activeTab, setActiveTab] = useState('metadata');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
+
   // Load Datasets & Experiments
   useEffect(() => {
     (async () => {
@@ -219,11 +220,6 @@ export default function FiftyOneDashboard() {
     return imageEval ? imageEval.predictions : [];
   };
 
-  const totalAnnotations = embeddings.reduce((acc, curr) => acc + (curr.labels?.length || 0), 0);
-  
-  const avgGSD = embeddings.length > 0
-    ? (embeddings.reduce((acc, curr) => acc + (curr.metadata?.gsd || 0.3), 0) / embeddings.length).toFixed(3)
-    : '0.300';
 
   const getAnomalyDistancePercent = (item: any) => {
     if (embeddings.length === 0) return 0;
@@ -302,6 +298,106 @@ export default function FiftyOneDashboard() {
       setStatusMessage(`Chip successfully synchronized. CVAT Task Link active: http://localhost:8080/tasks/review/${imageId}`);
     }, 1200);
   };
+
+  // Calculate Filtered Dataset Analytics
+  const totalAnnotations = filteredEmbeddings.reduce((acc, curr) => acc + (curr.labels?.length || 0), 0);
+  
+  const avgGSD = filteredEmbeddings.length > 0
+    ? (filteredEmbeddings.reduce((acc, curr) => acc + (curr.metadata?.gsd_meters || curr.metadata?.gsd || 0.3), 0) / filteredEmbeddings.length).toFixed(3)
+    : '0.300';
+
+  const runwayCount = filteredEmbeddings.filter((e: any) => e.metadata?.scene_type === 'runway_intersection').length;
+  const taxiwayCount = filteredEmbeddings.filter((e: any) => e.metadata?.scene_type === 'taxiway').length;
+  const cargoRampCount = filteredEmbeddings.filter((e: any) => e.metadata?.scene_type === 'cargo_ramp').length;
+  const otherSceneCount = filteredEmbeddings.length - runwayCount - taxiwayCount - cargoRampCount;
+
+  // Calculate Outliers (>70%)
+  const highOutliers = filteredEmbeddings.filter((e: any) => getAnomalyDistancePercent(e) > 70);
+  const outlierCount = highOutliers.length;
+
+  // Calculate Unlabeled chips
+  const unlabeledCount = filteredEmbeddings.filter((e: any) => !e.labels || e.labels.length === 0).length;
+  const avgLabelsPerChip = filteredEmbeddings.length > 0 ? (totalAnnotations / filteredEmbeddings.length).toFixed(1) : '0';
+
+  // Sensing & Geospatial Audit Calculations
+  const avgAngle = filteredEmbeddings.length > 0
+    ? (filteredEmbeddings.reduce((acc, curr) => {
+        const val = curr.metadata?.sensor_angle_deg !== undefined 
+          ? curr.metadata.sensor_angle_deg 
+          : (curr.metadata?.incidence_angle || 0.0);
+        return acc + val;
+      }, 0) / filteredEmbeddings.length).toFixed(2)
+    : '0.00';
+
+  const airportMap: Record<string, number> = {};
+  filteredEmbeddings.forEach(e => {
+    const code = e.metadata?.airport_code || 'KIAD';
+    airportMap[code] = (airportMap[code] || 0) + 1;
+  });
+  const sortedAirports = Object.entries(airportMap)
+    .map(([code, count]) => ({
+      code,
+      count,
+      pct: ((count / (filteredEmbeddings.length || 1)) * 100).toFixed(1)
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // Target class counts for ground truth labels within the active filtered embeddings
+  const classCounts: Record<number, number> = {};
+  filteredEmbeddings.forEach(e => {
+    if (e.labels) {
+      e.labels.forEach((lbl: any) => {
+        const cid = lbl.class_id;
+        classCounts[cid] = (classCounts[cid] || 0) + 1;
+      });
+    }
+  });
+  const totalFilteredAnnotations = Object.values(classCounts).reduce((a, b) => a + b, 0);
+  const sortedClassCounts = Object.entries(classCounts).map(([cid, count]) => ({
+    classId: parseInt(cid),
+    className: CLASS_NAMES[parseInt(cid)] || `Class ${cid}`,
+    count,
+    pct: totalFilteredAnnotations > 0 ? ((count / totalFilteredAnnotations) * 100).toFixed(1) : '0.0',
+    color: CLASS_COLORS[parseInt(cid)] || '#00f2fe'
+  })).sort((a, b) => b.count - a.count);
+
+  // Calculate dynamic precision / recall if evaluation is loaded
+  let totalTP = 0;
+  let totalFP = 0;
+  let totalFN = 0;
+  const classErrors: Record<number, { fp: number; fn: number }> = {};
+
+  if (evaluation && evaluation.predictions) {
+    evaluation.predictions.forEach((imgEval: any) => {
+      (imgEval.predictions || []).forEach((pred: any) => {
+        const cid = pred.class_id;
+        if (cid !== undefined) {
+          if (!classErrors[cid]) classErrors[cid] = { fp: 0, fn: 0 };
+        }
+        if (pred.type === 'TP' && pred.confidence >= confThreshold) {
+          totalTP++;
+        } else if (pred.type === 'FP' && pred.confidence >= confThreshold) {
+          totalFP++;
+          if (cid !== undefined) classErrors[cid].fp++;
+        } else if (pred.type === 'FN') {
+          totalFN++;
+          if (cid !== undefined) classErrors[cid].fn++;
+        }
+      });
+    });
+  }
+
+  const estPrecision = totalTP + totalFP > 0 ? (totalTP / (totalTP + totalFP)) : 0;
+  const estRecall = totalTP + totalFN > 0 ? (totalTP / (totalTP + totalFN)) : 0;
+  const estF1 = estPrecision + estRecall > 0 ? (2 * (estPrecision * estRecall) / (estPrecision + estRecall)) : 0;
+
+  const sortedClassErrors = Object.entries(classErrors).map(([cid, errs]) => ({
+    classId: parseInt(cid),
+    className: CLASS_NAMES[parseInt(cid)] || `Class ${cid}`,
+    totalErrors: errs.fp + errs.fn,
+    fp: errs.fp,
+    fn: errs.fn
+  })).sort((a, b) => b.totalErrors - a.totalErrors);
 
   return (
     <div
@@ -942,7 +1038,11 @@ export default function FiftyOneDashboard() {
                         <div
                           key={item.image_id}
                           onClick={() => {
-                            setSelectedChip(item);
+                            if (selectedChip && selectedChip.image_id === item.image_id) {
+                              setSelectedChip(null);
+                            } else {
+                              setSelectedChip(item);
+                            }
                           }}
                           onDoubleClick={() => {
                             setZoomedChip(item);
@@ -966,7 +1066,8 @@ export default function FiftyOneDashboard() {
                         >
                           <div
                             style={{
-                              height: '120px',
+                              width: '100%',
+                              aspectRatio: '1/1',
                               borderRadius: '6px',
                               overflow: 'hidden',
                               position: 'relative',
@@ -1176,7 +1277,11 @@ export default function FiftyOneDashboard() {
                               }}
                               onClick={(evt) => {
                                 evt.stopPropagation();
-                                setSelectedChip(e);
+                                if (selectedChip && selectedChip.image_id === e.image_id) {
+                                  setSelectedChip(null);
+                                } else {
+                                  setSelectedChip(e);
+                                }
                               }}
                               onDoubleClick={(evt) => {
                                 evt.stopPropagation();
@@ -1248,27 +1353,39 @@ export default function FiftyOneDashboard() {
                       minHeight: 0
                     }}
                   >
-                    <h4
-                      style={{
-                        fontSize: '0.8rem',
-                        fontFamily: "'Orbitron', sans-serif",
-                        color: '#00f2fe',
-                        margin: 0,
-                        borderBottom: '1px solid rgba(255,255,255,0.08)',
-                        paddingBottom: '6px'
-                      }}
-                    >
-                      NODE METADATA & SIMILARITY
-                    </h4>
-                    {selectedChip ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    {selectedChip && (
+                      <div className="glass-panel" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.05)', padding: '14px', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '6px' }}>
+                          <h5 style={{ fontFamily: "'Orbitron', sans-serif", fontSize: '0.7rem', color: '#00f2fe', margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <Compass style={{ width: '14px', height: '14px' }} />
+                            CHIP INSPECTOR ({selectedChip.image_id.substring(0, 8)})
+                          </h5>
+                          <button
+                            onClick={() => setSelectedChip(null)}
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              color: '#94a3b8',
+                              cursor: 'pointer',
+                              fontSize: '0.85rem',
+                              padding: '2px 6px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              transition: 'color 0.15s ease'
+                            }}
+                          >
+                            ✕
+                          </button>
+                        </div>
                         <div
                           style={{
-                            height: '340px',
+                            width: '100%',
+                            aspectRatio: '1/1',
                             borderRadius: '8px',
                             overflow: 'hidden',
                             border: '1px solid rgba(255,255,255,0.1)',
-                            position: 'relative'
+                            position: 'relative',
+                            background: '#000'
                           }}
                         >
                           <img
@@ -1279,6 +1396,65 @@ export default function FiftyOneDashboard() {
                               objectFit: 'cover'
                             }}
                           />
+                          <svg
+                            style={{
+                              position: 'absolute',
+                              top: 0,
+                              left: 0,
+                              width: '100%',
+                              height: '100%',
+                              pointerEvents: 'none'
+                            }}
+                            viewBox="0 0 512 512"
+                          >
+                            {showGroundTruth &&
+                              selectedChip.labels &&
+                              selectedChip.labels.map((lbl: any, tIdx: number) => {
+                                const bbox = lbl.bbox || [0, 0, 0, 0];
+                                const color = CLASS_COLORS[lbl.class_id] || '#00f2fe';
+                                return (
+                                  <rect
+                                    key={`sel-gt-${tIdx}`}
+                                    x={bbox[0] * 512}
+                                    y={bbox[1] * 512}
+                                    width={Math.max(15, (bbox[2] - bbox[0]) * 512)}
+                                    height={Math.max(15, (bbox[3] - bbox[1]) * 512)}
+                                    fill="none"
+                                    stroke={color}
+                                    strokeWidth={3}
+                                  />
+                                );
+                              })}
+                            {showPredictions &&
+                              getPredictionsForImage(selectedChip.image_id).map((pred: any, pIdx: number) => {
+                                if (
+                                  pred.confidence < confThreshold ||
+                                  (pred.type === 'TP' && !showTP) ||
+                                  (pred.type === 'FP' && !showFP) ||
+                                  (pred.type === 'FN' && !showFN)
+                                )
+                                  return null;
+                                const color =
+                                  pred.type === 'TP'
+                                    ? '#00ff87'
+                                    : pred.type === 'FP'
+                                      ? '#ff0055'
+                                      : '#ff9900';
+                                return (
+                                  <rect
+                                    key={`sel-pred-${pIdx}`}
+                                    x={pred.bbox[0]}
+                                    y={pred.bbox[1]}
+                                    width={Math.max(15, pred.bbox[2] - pred.bbox[0])}
+                                    height={Math.max(15, pred.bbox[3] - pred.bbox[1])}
+                                    fill="none"
+                                    stroke={color}
+                                    strokeWidth={4}
+                                    strokeDasharray={pred.type === 'FN' ? '8,8' : 'none'}
+                                  />
+                                );
+                              })}
+                          </svg>
                           <button
                             onClick={() => setZoomedChip(selectedChip)}
                             style={{
@@ -1307,76 +1483,130 @@ export default function FiftyOneDashboard() {
                           style={{
                             display: 'grid',
                             gridTemplateColumns: '1fr 1fr',
-                            gap: '10px',
-                            fontSize: '0.75rem',
+                            gap: '8px',
+                            fontSize: '0.7rem',
                             fontFamily: "'Space Grotesk', monospace"
                           }}
                         >
                           <div
                             style={{
-                              background: 'rgba(255,255,255,0.02)',
-                              padding: '8px 10px',
-                              borderRadius: '6px',
-                              border: '1px solid rgba(255,255,255,0.05)'
+                              background: 'rgba(255,255,255,0.01)',
+                              padding: '6px 8px',
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.04)'
                             }}
                           >
-                            <div style={{ color: '#94a3b8', fontSize: '0.6rem', marginBottom: '2px' }}>IMAGE ID</div>
-                            <div style={{ fontWeight: 600, color: '#fff' }}>{selectedChip.image_id}</div>
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>IMAGE ID</div>
+                            <div style={{ fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedChip.image_id}</div>
                           </div>
                           <div
                             style={{
-                              background: 'rgba(255,255,255,0.02)',
-                              padding: '8px 10px',
-                              borderRadius: '6px',
-                              border: '1px solid rgba(255,255,255,0.05)'
+                              background: 'rgba(255,255,255,0.01)',
+                              padding: '6px 8px',
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.04)'
                             }}
                           >
-                            <div style={{ color: '#94a3b8', fontSize: '0.6rem', marginBottom: '2px' }}>SCENE TYPE</div>
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>SCENE TYPE</div>
                             <div style={{ fontWeight: 600, color: '#fff' }}>
                               {(selectedChip.metadata?.scene_type || 'aprons').toUpperCase()}
                             </div>
                           </div>
                           <div
                             style={{
-                              background: 'rgba(255,255,255,0.02)',
-                              padding: '8px 10px',
-                              borderRadius: '6px',
-                              border: '1px solid rgba(255,255,255,0.05)'
+                              background: 'rgba(255,255,255,0.01)',
+                              padding: '6px 8px',
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.04)'
                             }}
                           >
-                            <div style={{ color: '#94a3b8', fontSize: '0.6rem', marginBottom: '2px' }}>ANOMALY DISTANCE</div>
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>ANOMALY DISTANCE</div>
                             <div style={{ fontWeight: 600, color: '#ff9900' }}>
                               {getAnomalyDistancePercent(selectedChip).toFixed(1)}% Outlier
                             </div>
                           </div>
                           <div
                             style={{
-                              background: 'rgba(255,255,255,0.02)',
-                              padding: '8px 10px',
-                              borderRadius: '6px',
-                              border: '1px solid rgba(255,255,255,0.05)'
+                              background: 'rgba(255,255,255,0.01)',
+                              padding: '6px 8px',
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.04)'
                             }}
                           >
-                            <div style={{ color: '#94a3b8', fontSize: '0.6rem', marginBottom: '2px' }}>COORDINATES</div>
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>COORDINATES</div>
                             <div style={{ fontWeight: 600, color: '#00ff87' }}>
                               {selectedChip.x.toFixed(2)}, {selectedChip.y.toFixed(2)}
                             </div>
                           </div>
+                          <div
+                            style={{
+                              background: 'rgba(255,255,255,0.01)',
+                              padding: '6px 8px',
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.04)'
+                            }}
+                          >
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>SENSOR TYPE</div>
+                            <div style={{ fontWeight: 600, color: '#fff' }}>
+                              {selectedChip.metadata?.sensor_type || 'Optical (WorldView-3)'}
+                            </div>
+                          </div>
+                          <div
+                            style={{
+                              background: 'rgba(255,255,255,0.01)',
+                              padding: '6px 8px',
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.04)'
+                            }}
+                          >
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>SITE CODE</div>
+                            <div style={{ fontWeight: 600, color: '#fff' }}>
+                              {selectedChip.metadata?.airport_code || 'KIAD'}
+                            </div>
+                          </div>
+                          <div
+                            style={{
+                              background: 'rgba(255,255,255,0.01)',
+                              padding: '6px 8px',
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.04)'
+                            }}
+                          >
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>RESOLUTION</div>
+                            <div style={{ fontWeight: 600, color: '#fff' }}>
+                              {selectedChip.metadata?.gsd_meters || selectedChip.metadata?.gsd || 0.3}m GSD
+                            </div>
+                          </div>
+                          <div
+                            style={{
+                              background: 'rgba(255,255,255,0.01)',
+                              padding: '6px 8px',
+                              borderRadius: '4px',
+                              border: '1px solid rgba(255,255,255,0.04)'
+                            }}
+                          >
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>LOOK ANGLE</div>
+                            <div style={{ fontWeight: 600, color: '#fff' }}>
+                              {selectedChip.metadata?.sensor_angle_deg !== undefined 
+                                ? `${selectedChip.metadata.sensor_angle_deg}°` 
+                                : `${selectedChip.metadata?.incidence_angle || 0}°`}
+                            </div>
+                          </div>
                         </div>
 
-                        <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '14px' }}>
+                        <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '10px' }}>
                           <span
                             style={{
-                              fontSize: '0.65rem',
+                              fontSize: '0.6rem',
                               fontFamily: "'Space Grotesk', monospace",
                               color: '#94a3b8',
                               display: 'block',
-                              marginBottom: '8px'
+                              marginBottom: '6px'
                             }}
                           >
                             CLOSEST NEIGHBORS IN VECTOR EMBEDDINGS (DISTANCE ANALYSIS)
                           </span>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
                             {getClosestNeighbors(selectedChip).map((e: any) => (
                               <div
                                 key={e.emb.image_id}
@@ -1392,13 +1622,13 @@ export default function FiftyOneDashboard() {
                                   src={getImageUrl(activeDatasetId, e.emb.image_id)}
                                   style={{
                                     width: '100%',
-                                    height: '120px',
+                                    height: '40px',
                                     objectFit: 'cover',
                                     borderRadius: '4px',
                                     border: '1px solid rgba(255,255,255,0.05)'
                                   }}
                                 />
-                                <div style={{ fontSize: '0.5rem', color: '#00f2fe', marginTop: '4px' }}>
+                                <div style={{ fontSize: '0.45rem', color: '#00f2fe', marginTop: '2px' }}>
                                   d={e.dist.toFixed(2)}
                                 </div>
                               </div>
@@ -1406,29 +1636,180 @@ export default function FiftyOneDashboard() {
                           </div>
                         </div>
                       </div>
-                    ) : (
-                      <div
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          padding: '40px 20px',
-                          border: '1px dashed rgba(255,255,255,0.1)',
-                          borderRadius: '8px',
-                          background: 'rgba(255,255,255,0.01)',
-                          color: '#94a3b8',
-                          textAlign: 'center',
-                          gap: '12px',
-                          marginTop: '20px'
-                        }}
-                      >
-                        <Info style={{ width: '20px', height: '20px', color: 'rgba(0, 242, 254, 0.5)' }} />
-                        <span style={{ fontSize: '0.7rem', fontFamily: "'Space Grotesk', monospace", lineHeight: '1.4' }}>
-                          Select a point on the PCA space or grid chip to inspect embedding metrics.
-                        </span>
-                      </div>
                     )}
+
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '16px',
+                        fontSize: '0.75rem',
+                        fontFamily: "'Space Grotesk', monospace"
+                      }}
+                    >
+                      {/* Section 1: Ingestion Specifications */}
+                      <div className="glass-panel" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.05)', padding: '14px', borderRadius: '8px' }}>
+                        <h5 style={{ fontFamily: "'Orbitron', sans-serif", fontSize: '0.7rem', color: '#00f2fe', margin: '0 0 12px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <Info style={{ width: '14px', height: '14px' }} />
+                          DATASET CLUSTERING REPORT
+                        </h5>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                          <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>ACTIVE / TOTAL NODES</div>
+                            <div style={{ fontSize: '1.0rem', fontWeight: 'bold', color: '#fff', marginTop: '2px' }}>{filteredEmbeddings.length} / {embeddings.length} Chips</div>
+                          </div>
+                          <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>DENSITY INDEX</div>
+                            <div style={{ fontSize: '1.0rem', fontWeight: 'bold', color: '#ff9900', marginTop: '2px' }}>{avgLabelsPerChip} Targets/Chip</div>
+                          </div>
+                          <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>SPATIAL OUTLIERS</div>
+                            <div style={{ fontSize: '1.0rem', fontWeight: 'bold', color: '#ff0055', marginTop: '2px' }}>{outlierCount} Chips (&gt;70%)</div>
+                          </div>
+                          <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                            <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>UNLABELED CHIPS</div>
+                            <div style={{ fontSize: '1.0rem', fontWeight: 'bold', color: '#00ff87', marginTop: '2px' }}>{unlabeledCount} Empty / Aprons</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Section 2: Cluster Geometry distribution */}
+                      <div className="glass-panel" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.05)', padding: '14px', borderRadius: '8px' }}>
+                        <h5 style={{ fontFamily: "'Orbitron', sans-serif", fontSize: '0.7rem', color: '#00f2fe', margin: '0 0 10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '6px' }}>
+                          GEOMETRY / SCENE TYPE DENSITY
+                        </h5>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {[
+                            { label: 'Cargo Ramps', count: cargoRampCount, pct: filteredEmbeddings.length > 0 ? (cargoRampCount/filteredEmbeddings.length*100).toFixed(0) : 0, color: '#ff9900' },
+                            { label: 'Runway Intersections', count: runwayCount, pct: filteredEmbeddings.length > 0 ? (runwayCount/filteredEmbeddings.length*100).toFixed(0) : 0, color: '#00f2fe' },
+                            { label: 'Taxiways / Aprons', count: taxiwayCount, pct: filteredEmbeddings.length > 0 ? (taxiwayCount/filteredEmbeddings.length*100).toFixed(0) : 0, color: '#00ff87' },
+                            { label: 'Other Airport Background', count: otherSceneCount, pct: filteredEmbeddings.length > 0 ? (otherSceneCount/filteredEmbeddings.length*100).toFixed(0) : 0, color: 'rgba(0, 114, 255, 0.8)' }
+                          ].map((item, idx) => (
+                            <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem' }}>
+                                <span style={{ color: '#fff', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: item.color }} />
+                                  {item.label}
+                                </span>
+                                <span style={{ color: '#94a3b8' }}>{item.count} ({item.pct}%)</span>
+                              </div>
+                              <div style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
+                                <div style={{ height: '100%', background: item.color, width: `${item.pct}%` }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Section 2.5: Sensing & Geospatial Audit */}
+                      <div className="glass-panel" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.05)', padding: '14px', borderRadius: '8px' }}>
+                        <h5 style={{ fontFamily: "'Orbitron', sans-serif", fontSize: '0.7rem', color: '#00f2fe', margin: '0 0 10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '6px' }}>
+                          SENSING & GEOSPATIAL AUDIT
+                        </h5>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                            <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                              <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>AVG RESOLUTION (GSD)</div>
+                              <div style={{ fontSize: '1.0rem', fontWeight: 'bold', color: '#fff', marginTop: '2px' }}>{avgGSD}m</div>
+                            </div>
+                            <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                              <div style={{ color: '#94a3b8', fontSize: '0.55rem' }}>AVG OFF-NADIR ANGLE</div>
+                              <div style={{ fontSize: '1.0rem', fontWeight: 'bold', color: '#ff9900', marginTop: '2px' }}>{avgAngle}°</div>
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <span style={{ fontSize: '0.6rem', color: '#94a3b8', textTransform: 'uppercase', fontFamily: "'Space Grotesk', monospace" }}>AIRPORT COVERAGE DISTRIBUTION</span>
+                            {sortedAirports.map((item, idx) => (
+                              <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem' }}>
+                                  <span style={{ color: '#fff' }}>{item.code}</span>
+                                  <span style={{ color: '#94a3b8' }}>{item.count} chips ({item.pct}%)</span>
+                                </div>
+                                <div style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
+                                  <div style={{ height: '100%', background: '#00f2fe', width: `${item.pct}%` }} />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Section 2.7: Target Class Distribution (Ground Truth) */}
+                      <div className="glass-panel" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.05)', padding: '14px', borderRadius: '8px' }}>
+                        <h5 style={{ fontFamily: "'Orbitron', sans-serif", fontSize: '0.7rem', color: '#00f2fe', margin: '0 0 10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '6px' }}>
+                          TARGET CLASS DISTRIBUTION (GT)
+                        </h5>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {sortedClassCounts.length > 0 ? (
+                            sortedClassCounts.map((item) => (
+                              <div key={item.classId} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem' }}>
+                                  <span style={{ color: '#fff', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: item.color }} />
+                                    {item.className}
+                                  </span>
+                                  <span style={{ color: '#94a3b8' }}>{item.count} ({item.pct}%)</span>
+                                </div>
+                                <div style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', overflow: 'hidden' }}>
+                                  <div style={{ height: '100%', background: item.color, width: `${item.pct}%` }} />
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div style={{ color: '#94a3b8', fontSize: '0.65rem', textAlign: 'center', padding: '6px 0' }}>
+                              No targets in the active filtered set.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Section 3: Model Failure Analysis */}
+                      {activeExperimentId && evaluation ? (
+                        <div className="glass-panel" style={{ background: 'rgba(255, 0, 85, 0.02)', border: '1px solid rgba(255, 0, 85, 0.15)', padding: '14px', borderRadius: '8px' }}>
+                          <h5 style={{ fontFamily: "'Orbitron', sans-serif", fontSize: '0.7rem', color: '#ff0055', margin: '0 0 10px 0', borderBottom: '1px solid rgba(255,0,85,0.15)', paddingBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <AlertCircle style={{ width: '14px', height: '14px', color: '#ff0055' }} />
+                            MODEL FAILURE & BIAS ANALYSIS
+                          </h5>
+                          
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', marginBottom: '12px' }}>
+                            <div style={{ background: 'rgba(0,0,0,0.3)', padding: '6px', borderRadius: '4px', textAlign: 'center' }}>
+                              <div style={{ color: '#94a3b8', fontSize: '0.5rem' }}>PRECISION</div>
+                              <div style={{ fontSize: '0.95rem', fontWeight: 'bold', color: '#00ff87', marginTop: '2px' }}>{(estPrecision * 100).toFixed(0)}%</div>
+                            </div>
+                            <div style={{ background: 'rgba(0,0,0,0.3)', padding: '6px', borderRadius: '4px', textAlign: 'center' }}>
+                              <div style={{ color: '#94a3b8', fontSize: '0.5rem' }}>RECALL</div>
+                              <div style={{ fontSize: '0.95rem', fontWeight: 'bold', color: '#ff9900', marginTop: '2px' }}>{(estRecall * 100).toFixed(0)}%</div>
+                            </div>
+                            <div style={{ background: 'rgba(0,0,0,0.3)', padding: '6px', borderRadius: '4px', textAlign: 'center' }}>
+                              <div style={{ color: '#94a3b8', fontSize: '0.5rem' }}>F1-SCORE</div>
+                              <div style={{ fontSize: '0.95rem', fontWeight: 'bold', color: '#00f2fe', marginTop: '2px' }}>{(estF1 * 100).toFixed(0)}%</div>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', background: 'rgba(0,0,0,0.2)', padding: '8px', borderRadius: '6px', fontSize: '0.65rem' }}>
+                            <div style={{ color: '#ff0055', fontWeight: 600, fontSize: '0.6rem', textTransform: 'uppercase', marginBottom: '4px' }}>Class Failure Distribution</div>
+                            {sortedClassErrors.length > 0 ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                {sortedClassErrors.slice(0, 3).map((item) => (
+                                  <div key={item.classId} style={{ display: 'flex', justifyContent: 'space-between', color: '#e2e8f0' }}>
+                                    <span>{item.className}</span>
+                                    <span style={{ color: '#ff4b80' }}>
+                                      {item.totalErrors} errors ({item.fp} FP / {item.fn} FN)
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div style={{ color: '#94a3b8', fontSize: '0.6rem' }}>No false positives/negatives detected at this threshold.</div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ background: 'rgba(255,255,255,0.01)', border: '1px dashed rgba(255,255,255,0.08)', padding: '14px', borderRadius: '8px', textAlign: 'center', color: '#94a3b8', fontSize: '0.65rem' }}>
+                          Select an evaluation model run from the top dropdown to overlay confusion details and bias analysis.
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}

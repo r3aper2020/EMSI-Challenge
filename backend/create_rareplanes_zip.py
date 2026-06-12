@@ -59,7 +59,7 @@ def main():
     tar = tarfile.open(tar_path, "r:gz")
     
     extracted_count = 0
-    target_count = 100
+    target_count = 400
     
     # UTM coordinates base
     base_easting = 296278.85
@@ -103,7 +103,16 @@ def main():
                 height = img_info.get("height", 512)
                 
                 for ann in anns:
-                    class_idx = 0  # Aircraft class is 0
+                    role = ann.get("role", "")
+                    if role in ['Small Civil Transport/Utility', 'Military Fighter/Interceptor/Attack', 'Military Trainer']:
+                        class_idx = 0  # Small Aircraft
+                    elif role in ['Medium Civil Transport/Utility', 'Military Transport/Utility/AWAC']:
+                        class_idx = 1  # Cargo Plane
+                    elif role in ['Large Civil Transport/Utility', 'Military Bomber']:
+                        class_idx = 2  # Large Aircraft
+                    else:
+                        class_idx = 0  # Default fallback to Small Aircraft
+                        
                     seg = ann.get("segmentation")
                     polygon = []
                     
@@ -165,7 +174,10 @@ def main():
                     "sensor_angle_deg": round(float(img_info.get("incidence_angle") or 4.13 + random.uniform(-1, 1)), 2),
                     "airport_code": "KIAD",
                     "time_of_capture": f"2026-06-11T11:{random.randint(10, 59):02d}:00Z",
-                    "scene_type": random.choice(["apron", "taxiway", "runway"])
+                    "scene_type": random.choice(["apron", "taxiway", "runway"]),
+                    "sensor_type": "Optical (WorldView-3)",
+                    "sar_polarization": "N/A",
+                    "incidence_angle": 0.0
                 }
                 
                 out_meta_path = os.path.join(metadata_out_dir, f"{chip_name}.json")

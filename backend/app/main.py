@@ -299,19 +299,15 @@ def get_dataset_embeddings(dataset_id: str):
     for emb in embeddings:
         image_id = emb["image_id"]
         
-        # Inject deterministic SAR vs Optical parameters for dataset exploration
-        h_val = deterministic_hash(image_id)
         if "metadata" not in emb or not emb["metadata"]:
             emb["metadata"] = {}
             
-        if h_val % 2 == 0:
-            emb["metadata"]["sensor_type"] = "SAR"
-            pols = ["VV", "VH", "VV+VH"]
-            emb["metadata"]["sar_polarization"] = pols[h_val % len(pols)]
-            emb["metadata"]["incidence_angle"] = round(18.5 + (h_val % 235) / 10.0, 1) # 18.5 to 42.0
-        else:
+        # Default to Optical if not specified in metadata json
+        if "sensor_type" not in emb["metadata"]:
             emb["metadata"]["sensor_type"] = "Optical (WorldView-3)"
+        if "sar_polarization" not in emb["metadata"]:
             emb["metadata"]["sar_polarization"] = "N/A"
+        if "incidence_angle" not in emb["metadata"]:
             emb["metadata"]["incidence_angle"] = 0.0
 
         parsed_labels = []

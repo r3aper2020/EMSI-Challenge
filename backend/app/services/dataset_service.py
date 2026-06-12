@@ -165,7 +165,10 @@ class DatasetService:
                 "train": "train/images",
                 "val": "val/images",
                 "names": {
-                    0: "aircraft"
+                    0: "small_aircraft",
+                    1: "cargo_plane",
+                    2: "large_aircraft",
+                    3: "helicopter"
                 }
             }
             
